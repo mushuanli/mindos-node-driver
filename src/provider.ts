@@ -6,13 +6,13 @@ import { HttpTransport } from './transport';
 interface RemoteConnection { endpoint: string; alias: string; credentialRef: string; username?: string; }
 interface SharedSource { source: Promise<FileSystemSourceOwner>; refs: number; }
 
-/** Runtime-scoped credentials; hosts may resolve persistent references from a secret store. */
+/** Runtime credential cache populated by the host configuration store or an external resolver. */
 export function createHttpSourceProvider(resolveCredential?: (reference: string) => string | Promise<string>) {
     const credentials = new Map<string, string>();
     const sources = new Map<string, SharedSource>();
     const credential = (reference: string) => async () => {
         const secret = credentials.get(reference) ?? await resolveCredential?.(reference);
-        if (!secret) throw new FSError('EACCES', 'Remote credentials required');
+        if (!secret) throw new FSError('EACCES', 'Remote credentials required', 'credential');
         return secret;
     };
     // One source per endpoint + identity + alias: several projects mounting the same export share
@@ -40,6 +40,7 @@ export function createHttpSourceProvider(resolveCredential?: (reference: string)
         return entry;
     };
     return {
+        clearCredential(reference: string) { credentials.delete(reference); },
         setCredential(reference: string, secret: string) {
             const previous = credentials.get(reference); credentials.set(reference, secret);
             return () => { if (previous === undefined) credentials.delete(reference); else credentials.set(reference, previous); };
@@ -58,8 +59,33 @@ export function createHttpSourceProvider(resolveCredential?: (reference: string)
             const transport = new HttpTransport({ ...connection, credential: credential(connection.credentialRef) });
             try {
                 const result = await transport.json<{ version: number; exports: unknown[] }>('v1/exports', {}, options);
-                if (result.version !== 1 || !Array.isArray(result.exports)) throw new FSError('EIO', 'Invalid file server response');
+                if (result.version !== 1 || !Array.isArray(result.exports)) throw new FSError('EIO', 'Invalid file server response', 'protocol');
             } finally { transport.close(); }
+        },
+        async checkDraft(connection: Omit<RemoteConnection, 'alias'>, password: string, options?: OperationOptions) {
+            const transport = new HttpTransport({ ...connection, credential: password ? async () => password : credential(connection.credentialRef) });
+            try {
+                const result = await transport.json<{ version: number; exports: unknown[] }>('v1/exports', {}, options);
+                if (result.version !== 1 || !Array.isArray(result.exports)) throw new FSError('EIO', 'Invalid file server response', 'protocol');
+            } finally { transport.close(); }
+        },
+        async browse(connection: Omit<RemoteConnection, 'alias'>, path: string, cursor?: string, options?: OperationOptions) {
+            if (path === '/') {
+                const transport = new HttpTransport({ ...connection, credential: credential(connection.credentialRef) });
+                try {
+                    const result = await transport.json<{ version: number; exports: { alias: string }[] }>('v1/exports', {}, options);
+                    if (result.version !== 1 || !Array.isArray(result.exports)
+                        || result.exports.some(item => !item || typeof item.alias !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(item.alias)))
+                        throw new FSError('EIO', 'Invalid file server response', 'protocol');
+                    return { paths: result.exports.map(item => `/${item.alias}`), nextCursor: null };
+                } finally { transport.close(); }
+            }
+            const [, alias, ...segments] = path.split('/');
+            const backend = new HttpFSBackend({ ...connection, alias, credential: credential(connection.credentialRef) });
+            try {
+                const page = await backend.files.list(segments.join('/'), { ...options, cursor });
+                return { paths: page.entries.filter(item => item.stat.kind === 'directory').map(item => `${path}/${item.name}`), nextCursor: page.nextCursor };
+            } finally { await backend.close(); }
         },
         async dispose() {
             credentials.clear();

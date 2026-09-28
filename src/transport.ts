@@ -23,7 +23,7 @@ export class HttpTransport {
         return this.request(route, init, options, async response => {
             const data = await boundedBody(response, 4 * 1024 * 1024);
             try { return JSON.parse(new TextDecoder().decode(data)) as T; }
-            catch { throw new FSError('EIO', 'Invalid file server JSON'); }
+            catch { throw new FSError('EIO', 'Invalid file server JSON', 'protocol'); }
         });
     }
     async content(route: string, init: RequestInit, options?: OperationOptions) {
@@ -119,6 +119,12 @@ export class HttpMutationError extends FSError {
 }
 
 async function boundedBody(response: Response, limit: number): Promise<Uint8Array> {
+    const declared = response.headers.get('content-length');
+    const encoding = response.headers.get('content-encoding');
+    if ((!encoding || encoding === 'identity') && declared && /^\d+$/.test(declared) && Number(declared) > limit) {
+        await response.body?.cancel().catch(() => {});
+        throw new FSError('EFBIG', `File server response exceeds ${limit} bytes`, 'read');
+    }
     const reader = response.body?.getReader();
     if (!reader) return new Uint8Array();
     const chunks: Uint8Array[] = []; let size = 0;
@@ -126,7 +132,7 @@ async function boundedBody(response: Response, limit: number): Promise<Uint8Arra
         for (;;) {
             const { value, done } = await reader.read(); if (done) break;
             size += value.byteLength;
-            if (size > limit) throw new FSError('EIO', 'File server response limit exceeded');
+            if (size > limit) throw new FSError('EFBIG', `File server response exceeds ${limit} bytes`, 'read');
             chunks.push(value);
         }
         const data = new Uint8Array(size); let offset = 0;
@@ -141,8 +147,8 @@ async function responseError(response: Response): Promise<FSError> {
         const payload = JSON.parse(new TextDecoder().decode(await boundedBody(response, 64 * 1024))) as { code?: unknown; message?: unknown };
         declared = payload.code; message = payload.message;
     } catch { /* an empty body or an HTML proxy response: the status code is the only evidence */ }
-    return new FSError(remoteCode(declared, statusCode(response.status)),
-        typeof message === 'string' && message ? message : `File server returned ${response.status}`);
+    return Object.assign(new FSError(remoteCode(declared, statusCode(response.status)),
+        typeof message === 'string' && message ? message : `File server returned ${response.status}`), { httpStatus: response.status });
 }
 
 const STATUS_CODES: Record<number, FSErrorCode> = { 400: 'EINVAL', 401: 'EACCES', 403: 'EACCES', 404: 'ENOENT', 409: 'EEXIST',
