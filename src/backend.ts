@@ -26,7 +26,12 @@ export class HttpFSBackend implements FileStorageBackend {
         const result = await this.http.json<{ version: number; exports: RemoteExport[] }>('v1/exports', {}, options);
         if (result.version !== 1 || !Array.isArray(result.exports)) throw new FSError('ECAPABILITY', 'Unsupported file server protocol');
         if (!result.exports.some(item => item.alias === this.options.alias)) throw new FSError('EACCES', 'Export unavailable');
-        if (result.exports.find(item => item.alias === this.options.alias)?.access === 'rw' && result.exports.find(item => item.alias === this.options.alias)?.strongRevision === true) this.mutations = this.createMutations();
+        // Strong conditional writes are only sound when the source declares a name equivalence the
+        // revision key can honour; a case-folding source must stay read-only.
+        const target = result.exports.find(item => item.alias === this.options.alias);
+        const strongNames = typeof target?.nameSemantics === 'string' && target.nameSemantics.length > 0
+            && !/(insensitive|ignore.?case|fold)/i.test(target.nameSemantics);
+        if (target?.access === 'rw' && target.strongRevision === true && strongNames) this.mutations = this.createMutations();
         this.initialized = true;
     }
     async close(): Promise<void> { this.http.close(); }
@@ -55,7 +60,7 @@ export class HttpFSBackend implements FileStorageBackend {
         if (options?.cursor) query.set('cursor', options.cursor);
         const page = await this.http.json<FilePage>(`${this.base}/entries?${query}`, {}, options);
         if (!Array.isArray(page.entries) || !(page.nextCursor === null || typeof page.nextCursor === 'string')) throw new FSError('EIO', 'Invalid directory response');
-        for (const entry of page.entries) { validPath(entry.name); if (!entry.name || entry.name.includes('/')) throw new FSError('EIO', 'Invalid child name'); validateStat(entry.stat); }
+        for (const entry of page.entries) { validName(entry.name); validateStat(entry.stat); }
         return page;
     }
     private async read(path: string, options?: FileReadOptions) {
@@ -71,7 +76,13 @@ export class HttpFSBackend implements FileStorageBackend {
         const result = await this.http.content(`${this.base}/content?${new URLSearchParams({ path: validPath(path) })}`, { headers }, options);
         if (headers.has('Range')) {
             const range = result.range?.match(/^bytes (\d+)-(\d+)\/(\d+)$/);
-            if (result.status !== 206 || !range || Number(range[1]) !== offset || Number(range[2]) - offset + 1 !== result.data.length)
+            const start = range ? Number(range[1]) : -1, end = range ? Number(range[2]) : -1;
+            const expectedEnd = length === undefined ? undefined : offset + length - 1;
+            // The response must match what this read asked for, not merely be self-consistent:
+            // a short or over-long slice is a server fault, never a valid shorter read.
+            if (result.status !== 206 || !range || start !== offset || end - start + 1 !== result.data.length
+                || (expectedEnd !== undefined && (end !== expectedEnd || result.data.length !== length))
+                || Number(range[3]) < end + 1)
                 throw new FSError('EIO', 'Unexpected range response');
         }
         if (options?.ifRevision && result.revision !== options.ifRevision) throw new FSError('ECONFLICT', 'Read revision changed');
@@ -85,8 +96,19 @@ export async function openHttpFileSource(options: HttpFileSourceOptions, viewId 
 }
 
 function validPath(path: string): string {
-    if (typeof path !== 'string' || new TextEncoder().encode(path).length > 4096 || path.startsWith('/') || /[\\\0]/.test(path)
-        || path.split('/').some(part => part === '..' || part === '.' || part.includes(':')))
-        throw new FSError('EINVAL', 'Expected an export-relative path');
+    if (typeof path !== 'string' || new TextEncoder().encode(path).length > 4096 || path.startsWith('/') || /[\\\0]/.test(path)) throw invalidPath();
+    const parts = path.split('/');
+    if (parts.some(part => part === '..' || part === '.')) throw invalidPath();
+    // Only a platform path prefix is rejected; a colon inside a name (`2024:Q1.md`) is a legal
+    // export-relative name and must not hide a whole directory.
+    if (/^[a-zA-Z]:/.test(parts[0] ?? '')) throw invalidPath();
     return path;
 }
+
+/** Directory entries are single names, never paths, so the drive-prefix rule does not apply. */
+function validName(name: unknown): void {
+    if (typeof name !== 'string' || !name || name.includes('/') || /[\\\0]/.test(name) || name === '.' || name === '..')
+        throw new FSError('EIO', 'Invalid child name');
+}
+
+function invalidPath() { return new FSError('EINVAL', 'Expected an export-relative path'); }

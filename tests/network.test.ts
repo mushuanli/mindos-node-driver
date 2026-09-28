@@ -8,9 +8,9 @@ import { once } from 'node:events';
 import { createFile } from '@itookit/vfs-core';
 import { openHttpFileSource } from '../src';
 
-// The fs-server source is not tracked in this repository; this integration test only runs where
-// the Cargo manifest is present. The fixture below must match that server's config schema.
-const manifest = resolve('../../tools/fs-server/Cargo.toml');
+// The server lives in its own repository under tools/; this integration test only runs where that
+// Cargo manifest is present. The fixture below must match src/config.rs of that server.
+const manifest = resolve('../../tools/itookit-fs-server/Cargo.toml');
 
 it.skipIf(process.platform !== 'linux' || !existsSync(manifest))('reads, conditionally saves and cancels against the real Rust server', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'http-vfs-'));
@@ -18,19 +18,19 @@ it.skipIf(process.platform !== 'linux' || !existsSync(manifest))('reads, conditi
     const { mkdir } = await import('node:fs/promises'); await mkdir(root);
     await writeFile(join(root, 'note.txt'), 'original');
     const config = join(directory, 'server.toml');
+    // Single-user config: top-level credentials plus a flat export list.
     await writeFile(config, `listen = "127.0.0.1:0"
-[exports.docs]
-root = ${JSON.stringify(root)}
+username = "test"
+password_env = "TEST_FS_PASSWORD"
+
+[[exports]]
+alias = "docs"
+path = ${JSON.stringify(root)}
 access = "rw"
-writer_policy = "exclusive"
-[clients.test]
-token_env = "TEST_FS_TOKEN"
-exports = ["docs"]
-write_exports = ["docs"]
 `);
-    const token = 'integration-secret-at-least-24-bytes';
+    const password = 'integration-password';
     const child = spawn('cargo', ['run', '--quiet', '--manifest-path', manifest, '--', config],
-        { env: { ...process.env, TEST_FS_TOKEN: token }, stdio: ['ignore', 'ignore', 'pipe'] });
+        { env: { ...process.env, TEST_FS_PASSWORD: password }, stdio: ['ignore', 'ignore', 'pipe'] });
     const exited = once(child, 'exit');
     let owner: Awaited<ReturnType<typeof openHttpFileSource>> | undefined;
     try {
@@ -44,7 +44,7 @@ write_exports = ["docs"]
             child.once('error', error => { clearTimeout(timer); reject(error); });
             child.once('exit', code => { clearTimeout(timer); reject(new Error(`fs-server exited ${code}: ${output}`)); });
         });
-        owner = await openHttpFileSource({ endpoint, alias: 'docs', credential: () => token });
+        owner = await openHttpFileSource({ endpoint, alias: 'docs', username: 'test', credential: () => password });
         const a = createFile(owner.fs, '/note.txt'), b = createFile(owner.fs, '/note.txt');
         expect(await a.read({ encoding: 'utf-8' })).toBe('original'); expect(await b.read({ encoding: 'utf-8' })).toBe('original');
         await a.write('updated');

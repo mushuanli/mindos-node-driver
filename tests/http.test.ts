@@ -3,13 +3,16 @@ import { HttpFSBackend, openHttpFileSource } from '../src';
 
 const config = { endpoint: 'https://files.example/', alias: 'docs', credential: () => 'secret' };
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
+/** A writable export: strong revisions require a declared, non-folding name equivalence. */
+const writableExport = (extra: object = {}) =>
+    json({ version: 1, exports: [{ alias: 'docs', access: 'rw', strongRevision: true, nameSemantics: 'case-sensitive', ...extra }] });
 
 describe('HTTP driver', () => {
     it('carries the read revision through a file handle and never replays a failed write', async () => {
         let revision = '"epoch:1"', writes = 0;
         const fetch: typeof globalThis.fetch = async (input, init) => {
             const path = new URL(String(input)).pathname;
-            if (path.endsWith('/exports')) return json({ version: 1, exports: [{ alias: 'docs', access: 'rw', strongRevision: true }] });
+            if (path.endsWith('/exports')) return writableExport();
             if (path.endsWith('/stat')) return json({ results: JSON.parse(String(init?.body)).paths.map((p: string) => ({ stat: { kind: p ? 'file' : 'directory', revision } })) });
             if (init?.method === 'PUT') {
                 writes++;
@@ -28,7 +31,7 @@ describe('HTTP driver', () => {
     it('reports unknown with an operation ID when a write response is lost', async () => {
         let writes = 0;
         const backend = new HttpFSBackend({ ...config, fetch: async (input, init) => {
-            if (String(input).endsWith('/exports')) return json({ version: 1, exports: [{ alias: 'docs', access: 'rw', strongRevision: true }] });
+            if (String(input).endsWith('/exports')) return writableExport();
             if (init?.method === 'PUT') { writes++; throw new TypeError('connection lost'); }
             return json({ outcome: 'committed' });
         } });
@@ -75,6 +78,70 @@ describe('HTTP driver', () => {
         const denied = new HttpFSBackend({ ...config, fetch: async () => new Response('', { status: 403 }) });
         await expect(denied.files.stat('file')).rejects.toMatchObject({ code: 'EACCES' });
         await backend.close(); await denied.close();
+    });
+    it('rejects a slice that does not match the requested length', async () => {
+        const answer = (range: string, bytes: number) => new HttpFSBackend({ ...config,
+            fetch: async () => new Response(new Uint8Array(bytes), { status: 206, headers: { 'content-range': range } }) });
+        // Requested bytes 2-4 (3 bytes): a short, a long and an unparsable range are all server faults.
+        await expect((await answer('bytes 2-3/10', 2)).files.read('file', { offset: 2, length: 3 })).rejects.toMatchObject({ code: 'EIO' });
+        await expect((await answer('bytes 2-9/10', 8)).files.read('file', { offset: 2, length: 3 })).rejects.toMatchObject({ code: 'EIO' });
+        await expect((await answer('bytes 0-2/10', 3)).files.read('file', { offset: 2, length: 3 })).rejects.toMatchObject({ code: 'EIO' });
+        await expect((await answer('bytes 2-4/10', 3)).files.read('file', { offset: 2, length: 3 })).resolves.toMatchObject({ data: expect.any(Uint8Array) });
+    });
+    it('keeps a definite rejection out of the unknown bucket and does not reconcile it', async () => {
+        const requests: string[] = [];
+        const backend = new HttpFSBackend({ ...config, fetch: async (input, init) => {
+            const path = new URL(String(input)).pathname; requests.push(`${init?.method ?? 'GET'} ${path}`);
+            if (path.endsWith('/exports')) return writableExport();
+            return new Response('', { status: 412 });
+        } });
+        await backend.init();
+        await expect(backend.mutations!.replace('note', new Uint8Array(), { kind: 'match', revision: '"epoch:1"' }))
+            .rejects.toMatchObject({ code: 'ECONFLICT', outcome: 'not-committed' });
+        expect(requests.some(entry => entry.includes('/cancel'))).toBe(false);
+        await backend.close();
+    });
+    it('prefers the error body code over the HTTP status and inherits the caller budget in a batch', async () => {
+        let timeout = '';
+        const backend = new HttpFSBackend({ ...config, fetch: async (input, init) => {
+            const path = new URL(String(input)).pathname;
+            if (path.endsWith('/exports')) return writableExport();
+            timeout = new Headers(init?.headers).get('x-timeout-ms') ?? '';
+            if (path.endsWith('/stat')) return new Response(JSON.stringify({ code: 'ENOTDIR', message: 'not a directory' }), { status: 400 });
+            return new Response('', { status: 400 });
+        } });
+        await backend.init();
+        await expect(backend.files.stat('file/a', { timeoutMs: 3000 })).rejects.toMatchObject({ code: 'ENOTDIR' });
+        expect(Number(timeout)).toBeGreaterThan(0); expect(Number(timeout)).toBeLessThanOrEqual(3000);
+        await backend.close();
+    });
+    it('accepts a colon inside a name but rejects a platform path prefix, and keeps folding exports read-only', async () => {
+        const paths: string[] = [];
+        const backend = new HttpFSBackend({ ...config, fetch: async (input, init) => {
+            const path = new URL(String(input)).pathname;
+            if (path.endsWith('/exports')) return writableExport({ nameSemantics: 'case-insensitive' });
+            paths.push(...JSON.parse(String(init?.body)).paths);
+            return json({ results: JSON.parse(String(init?.body)).paths.map((p: string) => ({ stat: { kind: p ? 'file' : 'directory' } })) });
+        } });
+        await backend.init();
+        expect(backend.mutations).toBeUndefined();
+        await expect(backend.files.stat('2024:Q1.md')).resolves.toMatchObject({ kind: 'file' });
+        expect(() => backend.files.stat('C:/host')).toThrow();
+        // Directory entries are names, not paths: the prefix rule must not apply to them.
+        expect(paths).toContain('2024:Q1.md');
+        await backend.close();
+    });
+    it('reports a cancellation that happened on the wire as not-committed', async () => {
+        const backend = new HttpFSBackend({ ...config, fetch: async (input, init) => {
+            if (new URL(String(input)).pathname.endsWith('/exports')) return writableExport();
+            return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort',
+                () => reject(new DOMException('aborted', 'AbortError')), { once: true }));
+        } });
+        await backend.init();
+        const controller = new AbortController();
+        const read = expect(backend.files.read('file', { signal: controller.signal })).rejects.toMatchObject({ code: 'ECANCELLED', outcome: 'not-committed' });
+        await new Promise(resolve => setTimeout(resolve, 0)); controller.abort(); await read;
+        await backend.close();
     });
 });
 

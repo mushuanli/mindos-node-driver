@@ -3,6 +3,7 @@ import type { HttpTransport } from './transport';
 
 interface Pending {
     path: string; active: boolean; signal: AbortSignal;
+    remaining(): number | undefined;
     resolve(value: FileStat | null): void; reject(error: unknown): void;
     finish(): void;
 }
@@ -14,7 +15,7 @@ export class StatBatch {
         const scope = operationScope(options);
         try { checkOperation(scope.options); } catch (e) { scope.dispose(); return Promise.reject(e); }
         return new Promise((resolve, reject) => {
-            const item: Pending = { path, active: true, signal: scope.options.signal,
+            const item: Pending = { path, active: true, signal: scope.options.signal, remaining: scope.remaining,
                 resolve, reject, finish: () => { item.active = false; scope.dispose(); item.signal.removeEventListener('abort', abort); } };
             const abort = () => { item.finish(); reject(item.signal.reason instanceof FSError ? item.signal.reason : new FSOperationCancelledError()); };
             item.signal.addEventListener('abort', abort, { once: true });
@@ -38,8 +39,12 @@ export class StatBatch {
         const changed = () => { if (items.every(item => !item.active)) controller.abort(); };
         for (const item of items) item.signal.addEventListener('abort', changed);
         try {
+            // A merged request never resets the budget: it inherits the smallest remaining budget of
+            // the subscribers that are still waiting, so a 3s probe cannot occupy the server for 30s.
+            const budgets = items.filter(item => item.active).map(item => item.remaining()).filter((value): value is number => value !== undefined);
+            const options = { signal: controller.signal, ...(budgets.length ? { timeoutMs: Math.min(...budgets) } : {}) };
             const result = await this.http.json<{ results: Array<{ stat?: FileStat | null; error?: string }> }>(this.route,
-                { method: 'POST', body: JSON.stringify({ paths: items.map(item => item.path) }) }, { signal: controller.signal });
+                { method: 'POST', body: JSON.stringify({ paths: items.map(item => item.path) }) }, options);
             if (!Array.isArray(result.results) || result.results.length !== items.length) throw new FSError('EIO', 'Invalid stat batch response');
             result.results.forEach((value, index) => {
                 const item = items[index]; if (!item.active) return;

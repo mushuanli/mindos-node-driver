@@ -36,16 +36,19 @@ export class HttpTransport {
     private async request<T>(route: string, init: RequestInit, options: OperationOptions | undefined,
         consume: (response: Response) => Promise<T>): Promise<T> {
         const scope = operationScope({ ...options, timeoutMs: options?.timeoutMs ?? this.config.timeoutMs ?? 30_000 }, this.lifetime.signal);
+        let sent = false;
         try {
             checkOperation(scope.options);
             const token = await this.config.credential(); checkOperation(scope.options);
             const headers = new Headers(init.headers); headers.set('Authorization', this.authorization(token));
             if (init.body) headers.set('Content-Type', 'application/json');
+            sent = true;
             const response = await this.send(route, { ...init, headers }, scope.options, scope.remaining);
             if (!response.ok) throw await responseError(response);
             return await consume(response);
         } catch (error) {
-            checkOperation(scope.options);
+            const cancelled = error instanceof FSOperationCancelledError ? error : cancellationReason(scope.options);
+            if (cancelled) throw stagedCancellation(cancelled, sent);
             if (error instanceof FSError) throw error;
             throw new FSError('EIO', 'File server request failed', 'connect');
         } finally { scope.dispose(); }
@@ -64,16 +67,28 @@ export class HttpTransport {
             const response = await (this.config.fetch ?? globalThis.fetch)(new URL(route, this.endpoint), {
                 ...init, headers, signal: scope.options.signal, redirect: 'error', cache: 'no-store', credentials: 'omit',
             });
-            const receipt = JSON.parse(new TextDecoder().decode(await boundedBody(response, 1024 * 1024)));
+            const body = await boundedBody(response, 1024 * 1024);
+            let receipt: { outcome?: string; code?: string; result?: unknown } | undefined;
+            try { receipt = JSON.parse(new TextDecoder().decode(body)) as typeof receipt; }
+            catch { receipt = undefined; }
+            // A readable receipt is evidence: a rejection is not-committed, not unknown. Only an
+            // unreadable response leaves the outcome genuinely open.
+            if (!receipt) throw new HttpMutationError(statusCode(response.status), operationId, response.status >= 500 ? 'unknown' : 'not-committed');
             if (response.ok && receipt.outcome === 'committed') return receipt.result as T;
             throw new HttpMutationError(remoteCode(receipt.code), operationId, receipt.outcome ?? 'unknown');
         } catch (error) {
-            if (error instanceof HttpMutationError) throw error;
+            if (error instanceof HttpMutationError) {
+                if (error.outcome === 'unknown') this.reconcile(statusRoute, operationId);
+                throw error;
+            }
             if (!sent) { checkOperation(scope.options); throw error; }
-            // A lost response never authorizes replay. Cancellation is best effort; query the ID to reconcile.
-            void this.json(`${statusRoute}/${operationId}/cancel`, { method: 'POST' }, { timeoutMs: 5000 }).catch(() => {});
-            throw new HttpMutationError(scope.options.signal?.reason instanceof FSOperationCancelledError && scope.options.signal.reason.timedOut ? 'ETIMEDOUT' : scope.options.signal?.aborted ? 'ECANCELLED' : 'EIO', operationId, 'unknown');
+            // A lost response never authorizes replay; only an unknown result is worth reconciling.
+            this.reconcile(statusRoute, operationId);
+            throw new HttpMutationError(cancellationReason(scope.options)?.timedOut ? 'ETIMEDOUT' : scope.options.signal?.aborted ? 'ECANCELLED' : 'EIO', operationId, 'unknown');
         } finally { scope.dispose(); }
+    }
+    private reconcile(statusRoute: string, operationId: string): void {
+        void this.json(`${statusRoute}/${operationId}/cancel`, { method: 'POST' }, { timeoutMs: 5000 }).catch(() => {});
     }
     private authorization(secret: string): string {
         if (this.config.username === undefined) return `Bearer ${secret}`;
@@ -121,10 +136,31 @@ async function boundedBody(response: Response, limit: number): Promise<Uint8Arra
 }
 
 async function responseError(response: Response): Promise<FSError> {
-    await response.body?.cancel();
-    const codes: Record<number, FSErrorCode> = { 400: 'EINVAL', 401: 'EACCES', 403: 'EACCES', 404: 'ENOENT',
-        409: 'EEXIST', 412: 'ECONFLICT', 416: 'EINVAL', 422: 'ECAPABILITY', 504: 'ETIMEDOUT' };
-    return new FSError(codes[response.status] ?? 'EIO', `File server returned ${response.status}`);
+    let declared: unknown, message: unknown;
+    try {
+        const payload = JSON.parse(new TextDecoder().decode(await boundedBody(response, 64 * 1024))) as { code?: unknown; message?: unknown };
+        declared = payload.code; message = payload.message;
+    } catch { /* an empty body or an HTML proxy response: the status code is the only evidence */ }
+    return new FSError(remoteCode(declared, statusCode(response.status)),
+        typeof message === 'string' && message ? message : `File server returned ${response.status}`);
+}
+
+const STATUS_CODES: Record<number, FSErrorCode> = { 400: 'EINVAL', 401: 'EACCES', 403: 'EACCES', 404: 'ENOENT', 409: 'EEXIST',
+    412: 'ECONFLICT', 413: 'EINVAL', 416: 'EINVAL', 422: 'ECAPABILITY', 428: 'EINVAL', 429: 'EBUSY', 501: 'ECAPABILITY',
+    503: 'EBUSY', 504: 'ETIMEDOUT', 507: 'ENOSPC' };
+
+function statusCode(status: number): FSErrorCode { return STATUS_CODES[status] ?? 'EIO'; }
+
+/** The scope aborts with a cancellation reason; anything else aborted the signal. */
+function cancellationReason(options: OperationOptions): FSOperationCancelledError | undefined {
+    if (!options.signal?.aborted) return undefined;
+    const reason = options.signal.reason;
+    return reason instanceof FSOperationCancelledError ? reason : new FSOperationCancelledError();
+}
+
+/** A scope cannot know how far work got; once a request is on the wire nothing was committed. */
+function stagedCancellation(error: FSOperationCancelledError, sent: boolean): FSOperationCancelledError {
+    return !sent || error.outcome !== 'not-started' ? error : new FSOperationCancelledError('not-committed', error.timedOut);
 }
 
 async function pause(ms: number, options: OperationOptions): Promise<void> {
@@ -136,7 +172,7 @@ async function pause(ms: number, options: OperationOptions): Promise<void> {
     });
 }
 
-function remoteCode(value: unknown): FSErrorCode {
-    const known: FSErrorCode[] = ['ECONFLICT', 'EEXIST', 'ENOENT', 'ENOTDIR', 'EISDIR', 'ENOTEMPTY', 'EROFS', 'EACCES', 'EINVAL', 'ECAPABILITY', 'ECANCELLED', 'ETIMEDOUT'];
-    return known.includes(value as FSErrorCode) ? value as FSErrorCode : 'EIO';
+function remoteCode(value: unknown, fallback: FSErrorCode = 'EIO'): FSErrorCode {
+    const known: FSErrorCode[] = ['ECONFLICT', 'EEXIST', 'ENOENT', 'ENOTDIR', 'EISDIR', 'ENOTEMPTY', 'EROFS', 'EACCES', 'EINVAL', 'ECAPABILITY', 'ECANCELLED', 'ETIMEDOUT', 'EBUSY', 'ENOSPC'];
+    return known.includes(value as FSErrorCode) ? value as FSErrorCode : fallback;
 }
