@@ -3,9 +3,9 @@ import { HttpFSBackend, openHttpFileSource } from '../src';
 
 const config = { endpoint: 'https://files.example/', alias: 'docs', credential: () => 'secret' };
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
-/** A writable export: strong revisions require a declared, non-folding name equivalence. */
+/** A writable export: strong revisions require a declared, supported name equivalence. */
 const writableExport = (extra: object = {}) =>
-    json({ version: 1, exports: [{ alias: 'docs', access: 'rw', strongRevision: true, nameSemantics: 'case-sensitive', ...extra }] });
+    json({ version: 1, exports: [{ alias: 'docs', access: 'rw', strongRevision: true, nameSemantics: 'source', ...extra }] });
 
 describe('HTTP driver', () => {
     it('carries the read revision through a file handle and never replays a failed write', async () => {
@@ -115,11 +115,11 @@ describe('HTTP driver', () => {
         expect(Number(timeout)).toBeGreaterThan(0); expect(Number(timeout)).toBeLessThanOrEqual(3000);
         await backend.close();
     });
-    it('accepts a colon inside a name but rejects a platform path prefix, and keeps folding exports read-only', async () => {
+    it('accepts a colon inside a name but rejects a platform path prefix, and keeps unknown name semantics read-only', async () => {
         const paths: string[] = [];
         const backend = new HttpFSBackend({ ...config, fetch: async (input, init) => {
             const path = new URL(String(input)).pathname;
-            if (path.endsWith('/exports')) return writableExport({ nameSemantics: 'case-insensitive' });
+            if (path.endsWith('/exports')) return writableExport({ nameSemantics: 'case-folded' });
             paths.push(...JSON.parse(String(init?.body)).paths);
             return json({ results: JSON.parse(String(init?.body)).paths.map((p: string) => ({ stat: { kind: p ? 'file' : 'directory' } })) });
         } });

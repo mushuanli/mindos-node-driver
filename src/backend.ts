@@ -6,6 +6,9 @@ import { StatBatch, validateStat } from './stat-batch';
 export interface HttpFileSourceOptions extends HttpConnectionOptions { alias: string; }
 export interface RemoteExport { alias: string; access: 'ro' | 'rw'; nameSemantics: string; strongRevision?: boolean; }
 
+/** Name equivalences the revision key can honour; an unlisted declaration stays read-only. */
+const STRONG_NAME_SEMANTICS = new Set(['source']);
+
 export class HttpFSBackend implements FileStorageBackend {
     readonly name = 'http';
     private initialized = false;
@@ -27,10 +30,9 @@ export class HttpFSBackend implements FileStorageBackend {
         if (result.version !== 1 || !Array.isArray(result.exports)) throw new FSError('ECAPABILITY', 'Unsupported file server protocol');
         if (!result.exports.some(item => item.alias === this.options.alias)) throw new FSError('EACCES', 'Export unavailable');
         // Strong conditional writes are only sound when the source declares a name equivalence the
-        // revision key can honour; a case-folding source must stay read-only.
+        // revision key can honour; an unknown declaration keeps the export read-only.
         const target = result.exports.find(item => item.alias === this.options.alias);
-        const strongNames = typeof target?.nameSemantics === 'string' && target.nameSemantics.length > 0
-            && !/(insensitive|ignore.?case|fold)/i.test(target.nameSemantics);
+        const strongNames = typeof target?.nameSemantics === 'string' && STRONG_NAME_SEMANTICS.has(target.nameSemantics);
         if (target?.access === 'rw' && target.strongRevision === true && strongNames) this.mutations = this.createMutations();
         this.initialized = true;
     }
