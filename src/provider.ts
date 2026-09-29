@@ -1,3 +1,4 @@
+import { discoverServer } from './capabilities';
 import { checkOperation, FSError, FileStorageAdapter, createFileSystemSource,
     type FileSystemSourceOwner, type OperationOptions } from '@itookit/vfs-core';
 import { HttpFSBackend } from './backend';
@@ -54,6 +55,10 @@ export function createHttpSourceProvider(resolveCredential?: (reference: string)
             catch (error) { await release(key, entry, await entry.source.catch(() => ({ dispose: async () => {} }) as FileSystemSourceOwner)); throw error; }
             let released = false;
             return { fs: source.fs, dispose: async () => { if (released) return; released = true; await release(key, entry, source); } };
+        },
+        async capabilities(connection: Omit<RemoteConnection, 'alias'>, options?: OperationOptions) {
+            const transport = new HttpTransport({ ...connection, credential: credential(connection.credentialRef) });
+            try { return await discoverServer(transport, options); } finally { transport.close(); }
         },
         async check(connection: Omit<RemoteConnection, 'alias'>, options?: OperationOptions) {
             const transport = new HttpTransport({ ...connection, credential: credential(connection.credentialRef) });

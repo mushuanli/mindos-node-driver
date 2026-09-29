@@ -10,7 +10,7 @@ import { openHttpFileSource } from '../src';
 
 // The server lives in its own repository under tools/; this integration test only runs where that
 // Cargo manifest is present. The fixture below must match src/config.rs of that server.
-const manifest = resolve('../../tools/itookit-fs-server/Cargo.toml');
+const manifest = resolve('../../tools/fs-agent/Cargo.toml');
 
 it.skipIf(process.platform !== 'linux' || !existsSync(manifest))('reads, conditionally saves and cancels against the real Rust server', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'http-vfs-'));

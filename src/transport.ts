@@ -141,14 +141,19 @@ async function boundedBody(response: Response, limit: number): Promise<Uint8Arra
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
+export class HttpResponseError extends FSError {
+    constructor(code: FSErrorCode, message: string, readonly status: number) { super(code, message); }
+    get httpStatus(): number { return this.status; }
+}
+
 async function responseError(response: Response): Promise<FSError> {
     let declared: unknown, message: unknown;
     try {
         const payload = JSON.parse(new TextDecoder().decode(await boundedBody(response, 64 * 1024))) as { code?: unknown; message?: unknown };
         declared = payload.code; message = payload.message;
     } catch { /* an empty body or an HTML proxy response: the status code is the only evidence */ }
-    return Object.assign(new FSError(remoteCode(declared, statusCode(response.status)),
-        typeof message === 'string' && message ? message : `File server returned ${response.status}`), { httpStatus: response.status });
+    return new HttpResponseError(remoteCode(declared, statusCode(response.status)),
+        typeof message === 'string' && message ? message : `File server returned ${response.status}`, response.status);
 }
 
 const STATUS_CODES: Record<number, FSErrorCode> = { 400: 'EINVAL', 401: 'EACCES', 403: 'EACCES', 404: 'ENOENT', 409: 'EEXIST',
