@@ -2,6 +2,7 @@ import { FSError, checkOperation, operationScope, pathUtils, type OperationOptio
 import type { HttpTransport } from './transport';
 import { pause } from './transport/cancellation';
 import { ProcessClient } from './process/client';
+import { requestId } from './request-id';
 import type { RemoteProcessSpec, ProcessStatus, ExecOptions } from './process/contracts';
 export type { RemoteProcessSpec, ExecOptions } from './process/contracts';
 
@@ -22,7 +23,7 @@ export class HttpProcessSession {
 
     private exec(command: string, args: string[], options?: ExecOptions) {
         if (this.closed) return Promise.reject(new FSError('EACCES', 'Remote process context is closed'));
-        const id = globalThis.crypto.randomUUID();
+        const id = requestId();
         const pending = this.run(id, command, args, options);
         this.active.set(id, pending);
         void pending.finally(() => this.active.delete(id)).catch(() => {});
@@ -40,6 +41,11 @@ export class HttpProcessSession {
             const started = await this.client.start(id, command, args, cwd, timeoutMs, scope.options);
             const status = await this.wait(id, started, scope.options);
             if (isTerminal(status)) this.outstanding.delete(id);
+            if (status.state !== 'exited' || status.code !== 0 || status.truncated) {
+                console.error('[fs-agent] Process failed', { serverId: this.spec.serverId, epoch: this.spec.epoch,
+                    processId: id, cwd, state: status.state, exitCode: status.code, truncated: status.truncated,
+                    error: status.error, stderr: status.stderr.slice(0, 4096) });
+            }
             return processResult(id, status, options.onOutput);
         } catch (error) {
             return await this.failed(id, error, scope.options, registered);
@@ -100,7 +106,7 @@ function processResult(id: string, status: ProcessStatus, onOutput?: ExecOptions
     onOutput?.({ stream: 'stderr', text: status.stderr });
     if (status.state !== 'exited' || status.truncated) {
         const code = status.state === 'cancelled' ? 'ECANCELLED' : status.state === 'timed-out' ? 'ETIMEDOUT' : 'EIO';
-        throw new FSError(code, `Remote process ${status.state}${status.truncated ? ' (output limit)' : ''}: ${id}`);
+        throw new FSError(code, `Remote process ${status.state}${status.truncated ? ' (output limit)' : ''}: ${id}${status.error ? `: ${status.error}` : ''}`);
     }
     return { stdout: status.stdout, stderr: status.stderr, code: status.code };
 }

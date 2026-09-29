@@ -6,6 +6,7 @@
 - 路径是别名内相对路径，凭据不写 URL、不跟随重定向。
 - 批量读的取消按订阅者隔离，最后一个订阅者离开才取消共享请求。
 - 网络错误不能转换成不存在；响应必须验证，所有读取有容量限制。
+- 失败在 console 记录 `[fs-agent]` 请求方法、服务地址、路由/文件路径、发送阶段和取消来源，并保留错误链；不得记录请求 headers、凭据或正文。
 - `pnpm --filter @itookit/vfsdriver-http test` / `typecheck` 验证。
 
 设计见 [HTTP 文件系统](../../doc/design/vfs-http-driver.md)。

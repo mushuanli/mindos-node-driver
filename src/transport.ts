@@ -1,4 +1,6 @@
 import { boundedBody } from './transport/body';
+import { requestId } from './request-id';
+import { reportHttpFailure } from './transport/diagnostics';
 import { responseError } from './transport/errors';
 import { cancellationReason, stagedCancellation, pause } from './transport/cancellation';
 import { mutationResult, HttpMutationError } from './transport/mutation';
@@ -56,14 +58,16 @@ export class HttpTransport {
             if (!response.ok) throw await responseError(response);
             return await consume(response);
         } catch (error) {
+            reportHttpFailure(this.endpoint, route, init.method ?? 'GET', error, scope.options,
+                this.lifetime.signal.aborted, options?.signal?.aborted === true, sent);
             const cancelled = error instanceof FSOperationCancelledError ? error : cancellationReason(scope.options);
             if (cancelled) throw stagedCancellation(cancelled, sent);
             if (error instanceof FSError) throw error;
-            throw new FSError('EIO', 'File server request failed', 'connect');
+            throw new FSError('EIO', 'File server request failed', 'connect', undefined, error instanceof Error ? error : undefined);
         } finally { scope.dispose(); }
     }
     async mutate<T>(route: string, init: RequestInit, statusRoute: string, options?: OperationOptions): Promise<T> {
-        const operationId = globalThis.crypto.randomUUID();
+        const operationId = requestId();
         const scope = operationScope({ ...options, timeoutMs: options?.timeoutMs ?? this.config.timeoutMs ?? 30_000 }, this.lifetime.signal);
         let sent = false;
         try {
@@ -78,6 +82,8 @@ export class HttpTransport {
             });
             return await mutationResult<T>(response, operationId);
         } catch (error) {
+            reportHttpFailure(this.endpoint, route, init.method ?? 'POST', error, scope.options,
+                this.lifetime.signal.aborted, options?.signal?.aborted === true, sent);
             if (error instanceof HttpMutationError) {
                 if (error.outcome === 'unknown') this.reconcile(statusRoute, operationId);
                 throw error;

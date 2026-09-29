@@ -1,5 +1,5 @@
 import { HttpTransport } from '../src/transport';
-import { it, expect } from 'vitest';
+import { it, expect, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, rm, readdir } from 'node:fs/promises';
@@ -21,7 +21,7 @@ it.skipIf(process.platform !== 'linux' || !existsSync(manifest))('reads, conditi
     const config = join(directory, 'server.toml');
     // Single-user config: top-level credentials plus a flat export list.
     await writeFile(config, `listen = "127.0.0.1:0"
-${process.env.FS_AGENT_PROCESS_TEST === '1' ? 'execution = true\nserver_id = "network-node"' : ''}
+${process.env.FS_AGENT_PROCESS_TEST === '1' ? '' : 'execution = false'}
 username = "test"
 password_env = "TEST_FS_PASSWORD"
 
@@ -34,11 +34,11 @@ access = "rw"
     const child = spawn('cargo', ['run', '--quiet', '--manifest-path', manifest, '--', config],
         { env: { ...process.env, TEST_FS_PASSWORD: password }, stdio: ['ignore', 'ignore', 'pipe'] });
     const exited = once(child, 'exit');
+    let output = '';
     let owner: Awaited<ReturnType<typeof openHttpFileSource>> | undefined;
     try {
         const endpoint = await new Promise<string>((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('fs-server startup timeout')), 60_000);
-            let output = '';
             child.stderr.on('data', data => {
                 output += data; const match = output.match(/listening on (127\.0\.0\.1:\d+)/);
                 if (match) { clearTimeout(timer); resolve(`http://${match[1]}`); }
@@ -76,6 +76,14 @@ access = "rw"
             await execution.release();
         }
         expect((await readdir(root)).filter(name => name.startsWith('.itookit-upload-'))).toEqual([]);
+        await vi.waitFor(() => expect(output).toContain('mutation.finished'));
+        const events = output.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+        expect(events.some(event => event.event === 'mutation.accepted' && event.level === 'debug')).toBe(true);
+        expect(events.some(event => event.event === 'mutation.finished' && event.fields.outcome === 'committed')).toBe(true);
+        expect(events.filter(event => event.event === 'http.failed').every(event => event.fields.status >= 400)).toBe(true);
+        expect(output).not.toContain(password);
+        expect(output).not.toContain('pwd; echo shell');
+        if (process.env.FS_AGENT_PROCESS_TEST === '1') expect(events.some(event => event.event === 'process.finished')).toBe(true);
     } finally {
         await owner?.dispose(); child.kill('SIGINT'); await exited; await rm(directory, { recursive: true, force: true });
     }
