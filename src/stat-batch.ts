@@ -1,3 +1,4 @@
+import { validateStat } from './protocol/stat';
 import { checkOperation, FSOperationCancelledError, FSError, operationScope, type FileStat, type OperationOptions } from '@itookit/vfs-core';
 import type { HttpTransport } from './transport';
 
@@ -39,13 +40,13 @@ export class StatBatch {
         const changed = () => { if (items.every(item => !item.active)) controller.abort(); };
         for (const item of items) item.signal.addEventListener('abort', changed);
         try {
-            // A merged request never resets the budget: it inherits the smallest remaining budget of
-            // the subscribers that are still waiting, so a 3s probe cannot occupy the server for 30s.
-            const budgets = items.filter(item => item.active).map(item => item.remaining()).filter((value): value is number => value !== undefined);
-            const options = { signal: controller.signal, ...(budgets.length ? { timeoutMs: Math.min(...budgets) } : {}) };
+            // Each subscriber owns its deadline. A short wait must not abort longer waits.
+            const budgets = items.filter(item => item.active).map(item => item.remaining() ?? this.http.defaultTimeoutMs);
+            const options = { signal: controller.signal, timeoutMs: Math.max(...budgets) };
             const result = await this.http.json<{ results: Array<{ stat?: FileStat | null; error?: string }> }>(this.route,
                 { method: 'POST', body: JSON.stringify({ paths: items.map(item => item.path) }) }, options);
-            if (!Array.isArray(result.results) || result.results.length !== items.length) throw new FSError('EIO', 'Invalid stat batch response');
+            if (!result || !Array.isArray(result.results) || result.results.length !== items.length
+                || result.results.some(value => !value || typeof value !== 'object')) throw new FSError('EIO', 'Invalid stat batch response');
             result.results.forEach((value, index) => {
                 const item = items[index]; if (!item.active) return;
                 if (value.error) item.reject(new FSError((['EACCES', 'EINVAL', 'ENOTDIR', 'ECAPABILITY'].includes(value.error) ? value.error : 'EIO') as import('@itookit/vfs-core').FSErrorCode, 'Remote stat failed'));
@@ -54,11 +55,4 @@ export class StatBatch {
         } catch (error) { for (const item of items) if (item.active) item.reject(error); }
         finally { for (const item of items) { item.signal.removeEventListener('abort', changed); item.finish(); } }
     }
-}
-
-export function validateStat(value: unknown): asserts value is FileStat | null {
-    if (value === null) return;
-    const stat = value as FileStat | undefined;
-    if (!stat || !['file', 'directory', 'symlink'].includes(stat.kind)
-        || (stat.size !== undefined && (!Number.isSafeInteger(stat.size) || stat.size < 0))) throw new FSError('EIO', 'Invalid remote file attributes');
 }

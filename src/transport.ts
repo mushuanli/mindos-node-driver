@@ -1,4 +1,12 @@
-import { checkOperation, FSError, FSOperationCancelledError, operationScope, type OperationOptions, type FSErrorCode } from '@itookit/vfs-core';
+import { boundedBody } from './transport/body';
+import { responseError } from './transport/errors';
+import { cancellationReason, stagedCancellation, pause } from './transport/cancellation';
+import { mutationResult, HttpMutationError } from './transport/mutation';
+export { HttpMutationError } from './transport/mutation';
+import { retryDelay } from './transport/retry';
+export { HttpResponseError } from './transport/errors';
+
+import { checkOperation, FSError, FSOperationCancelledError, operationScope, type OperationOptions } from '@itookit/vfs-core';
 
 export interface HttpConnectionOptions {
     endpoint: string;
@@ -18,6 +26,7 @@ export class HttpTransport {
         if (!['http:', 'https:'].includes(this.endpoint.protocol) || this.endpoint.username || this.endpoint.password
             || this.endpoint.search || this.endpoint.hash) throw new FSError('EINVAL', 'Invalid file server endpoint');
     }
+    get defaultTimeoutMs(): number { return this.config.timeoutMs ?? 30_000; }
     close() { this.lifetime.abort(new FSOperationCancelledError()); }
     async json<T>(route: string, init: RequestInit = {}, options?: OperationOptions): Promise<T> {
         return this.request(route, init, options, async response => {
@@ -67,15 +76,7 @@ export class HttpTransport {
             const response = await (this.config.fetch ?? globalThis.fetch)(new URL(route, this.endpoint), {
                 ...init, headers, signal: scope.options.signal, redirect: 'error', cache: 'no-store', credentials: 'omit',
             });
-            const body = await boundedBody(response, 1024 * 1024);
-            let receipt: { outcome?: string; code?: string; result?: unknown } | undefined;
-            try { receipt = JSON.parse(new TextDecoder().decode(body)) as typeof receipt; }
-            catch { receipt = undefined; }
-            // A readable receipt is evidence: a rejection is not-committed, not unknown. Only an
-            // unreadable response leaves the outcome genuinely open.
-            if (!receipt) throw new HttpMutationError(statusCode(response.status), operationId, response.status >= 500 ? 'unknown' : 'not-committed');
-            if (response.ok && receipt.outcome === 'committed') return receipt.result as T;
-            throw new HttpMutationError(remoteCode(receipt.code), operationId, receipt.outcome ?? 'unknown');
+            return await mutationResult<T>(response, operationId);
         } catch (error) {
             if (error instanceof HttpMutationError) {
                 if (error.outcome === 'unknown') this.reconcile(statusRoute, operationId);
@@ -104,86 +105,10 @@ export class HttpTransport {
             const response = await (this.config.fetch ?? globalThis.fetch)(new URL(route, this.endpoint), {
                 ...init, headers, signal: options.signal, redirect: 'error', cache: 'no-store', credentials: 'omit',
             });
-            if (attempt >= 2 || ![429, 502, 503, 504].includes(response.status)) return response;
+            const delay = retryDelay(init.method ?? 'GET', response, attempt);
+            if (delay === undefined) return response;
             await response.body?.cancel();
-            const retry = Number(response.headers.get('retry-after'));
-            await pause(Number.isFinite(retry) && retry > 0 ? retry * 1000 : (100 * 2 ** attempt + Math.random() * 100), options);
+            await pause(delay, options);
         }
     }
-}
-
-export class HttpMutationError extends FSError {
-    constructor(code: FSErrorCode, readonly operationId: string, readonly outcome: string) {
-        super(code, `Remote mutation ${outcome} (${operationId})`);
-    }
-}
-
-async function boundedBody(response: Response, limit: number): Promise<Uint8Array> {
-    const declared = response.headers.get('content-length');
-    const encoding = response.headers.get('content-encoding');
-    if ((!encoding || encoding === 'identity') && declared && /^\d+$/.test(declared) && Number(declared) > limit) {
-        await response.body?.cancel().catch(() => {});
-        throw new FSError('EFBIG', `File server response exceeds ${limit} bytes`, 'read');
-    }
-    const reader = response.body?.getReader();
-    if (!reader) return new Uint8Array();
-    const chunks: Uint8Array[] = []; let size = 0;
-    try {
-        for (;;) {
-            const { value, done } = await reader.read(); if (done) break;
-            size += value.byteLength;
-            if (size > limit) throw new FSError('EFBIG', `File server response exceeds ${limit} bytes`, 'read');
-            chunks.push(value);
-        }
-        const data = new Uint8Array(size); let offset = 0;
-        for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.length; }
-        return data;
-    } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
-}
-
-export class HttpResponseError extends FSError {
-    constructor(code: FSErrorCode, message: string, readonly status: number) { super(code, message); }
-    get httpStatus(): number { return this.status; }
-}
-
-async function responseError(response: Response): Promise<FSError> {
-    let declared: unknown, message: unknown;
-    try {
-        const payload = JSON.parse(new TextDecoder().decode(await boundedBody(response, 64 * 1024))) as { code?: unknown; message?: unknown };
-        declared = payload.code; message = payload.message;
-    } catch { /* an empty body or an HTML proxy response: the status code is the only evidence */ }
-    return new HttpResponseError(remoteCode(declared, statusCode(response.status)),
-        typeof message === 'string' && message ? message : `File server returned ${response.status}`, response.status);
-}
-
-const STATUS_CODES: Record<number, FSErrorCode> = { 400: 'EINVAL', 401: 'EACCES', 403: 'EACCES', 404: 'ENOENT', 409: 'EEXIST',
-    412: 'ECONFLICT', 413: 'EINVAL', 416: 'EINVAL', 422: 'ECAPABILITY', 428: 'EINVAL', 429: 'EBUSY', 501: 'ECAPABILITY',
-    503: 'EBUSY', 504: 'ETIMEDOUT', 507: 'ENOSPC' };
-
-function statusCode(status: number): FSErrorCode { return STATUS_CODES[status] ?? 'EIO'; }
-
-/** The scope aborts with a cancellation reason; anything else aborted the signal. */
-function cancellationReason(options: OperationOptions): FSOperationCancelledError | undefined {
-    if (!options.signal?.aborted) return undefined;
-    const reason = options.signal.reason;
-    return reason instanceof FSOperationCancelledError ? reason : new FSOperationCancelledError();
-}
-
-/** A scope cannot know how far work got; once a request is on the wire nothing was committed. */
-function stagedCancellation(error: FSOperationCancelledError, sent: boolean): FSOperationCancelledError {
-    return !sent || error.outcome !== 'not-started' ? error : new FSOperationCancelledError('not-committed', error.timedOut);
-}
-
-async function pause(ms: number, options: OperationOptions): Promise<void> {
-    checkOperation(options);
-    await new Promise<void>((resolve, reject) => {
-        const abort = () => { clearTimeout(timer); reject(new FSOperationCancelledError()); };
-        const timer = setTimeout(() => { options.signal?.removeEventListener('abort', abort); resolve(); }, ms);
-        options.signal?.addEventListener('abort', abort, { once: true });
-    });
-}
-
-function remoteCode(value: unknown, fallback: FSErrorCode = 'EIO'): FSErrorCode {
-    const known: FSErrorCode[] = ['ECONFLICT', 'EEXIST', 'ENOENT', 'ENOTDIR', 'EISDIR', 'ENOTEMPTY', 'EROFS', 'EACCES', 'EINVAL', 'ECAPABILITY', 'ECANCELLED', 'ETIMEDOUT', 'EBUSY', 'ENOSPC'];
-    return known.includes(value as FSErrorCode) ? value as FSErrorCode : fallback;
 }

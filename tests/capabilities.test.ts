@@ -17,7 +17,7 @@ describe('remote support discovery', () => {
         const calls: string[] = [];
         const client = transport(async url => {
             calls.push(String(url));
-            return String(url).endsWith('capabilities') ? new Response('', { status: 404 }) : Response.json({ version: 1, exports: [{ access: 'rw' }] });
+            return String(url).endsWith('capabilities') ? new Response('', { status: 404 }) : Response.json({ version: 1, exports: [{ alias: 'docs', access: 'rw' }] });
         });
         expect(await discoverServer(client)).toMatchObject({ serverId: null, process: { exec: false }, files: { write: true } });
         expect(calls).toHaveLength(2); client.close();

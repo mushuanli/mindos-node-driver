@@ -155,3 +155,40 @@ it('uses UTF-8 Basic credentials for named user/password connections', async () 
     expect(authorization).toBe('Basic ' + btoa(String.fromCharCode(...new TextEncoder().encode('alice:päss:word'))));
     await backend.close();
 });
+
+it('does not expire longer stat subscribers with the shortest batch deadline', async () => {
+    let complete!: (response: Response) => void;
+    let signal!: AbortSignal;
+    const backend = new HttpFSBackend({ ...config, fetch: async (_url, init) => {
+        signal = init!.signal!;
+        return new Promise(resolve => { complete = resolve; });
+    } });
+    const short = expect(backend.files.stat('a', { timeoutMs: 20 })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    const long = backend.files.stat('b', { timeoutMs: 5000 });
+    await short;
+    expect(signal.aborted).toBe(false);
+    complete(json({ results: [{ stat: { kind: 'file' } }, { stat: { kind: 'directory' } }] }));
+    await expect(long).resolves.toMatchObject({ kind: 'directory' });
+    await backend.close();
+});
+
+it.each([null, { version: 1, exports: [null] }, { version: 1, exports: [{ alias: '../escape' }] }])
+('rejects malformed export discovery as a protocol error', async payload => {
+    const backend = new HttpFSBackend({ ...config, fetch: async () => json(payload) });
+    await expect(backend.init()).rejects.toMatchObject({ code: 'EIO', operation: 'protocol' });
+    await backend.close();
+});
+
+it('does not classify a malformed successful write response as not-committed', async () => {
+    const backend = new HttpFSBackend({ ...config, fetch: async url => String(url).endsWith('/exports') ? writableExport() : new Response('broken') });
+    await backend.init();
+    await expect(backend.mutations!.replace('file', new Uint8Array(), { kind: 'create-only' }))
+        .rejects.toMatchObject({ outcome: 'unknown' });
+    await backend.close();
+});
+
+it('rejects missing list attributes instead of exposing invalid directory entries', async () => {
+    const backend = new HttpFSBackend({ ...config, fetch: async () => json({ entries: [{ name: 'bad', stat: null }], nextCursor: null }) });
+    await expect(backend.files.list('')).rejects.toMatchObject({ code: 'EIO' });
+    await backend.close();
+});

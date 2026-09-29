@@ -1,3 +1,4 @@
+import { readExports } from './protocol/exports';
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import { HttpTransport, HttpResponseError } from './transport';
 
@@ -5,6 +6,7 @@ import { HttpTransport, HttpResponseError } from './transport';
 export interface RemoteServerCapabilities {
     version: 1;
     serverId: string | null;
+    processEpoch?: string;
     files: { read: boolean; write: boolean };
     sync: { push: boolean };
     process: { exec: boolean };
@@ -20,10 +22,8 @@ export async function discoverServer(transport: HttpTransport, options?: Operati
     catch (error) {
         if (!(error instanceof HttpResponseError) || error.status !== 404) throw error;
         // Authenticate a legacy endpoint before classifying a missing route as files-only.
-        const legacy = await transport.json<{ version: number; exports: unknown[] }>('v1/exports', {}, options);
-        if (legacy?.version !== 1 || !Array.isArray(legacy.exports)) throw invalid();
-        return { version: 1, serverId: null, files: { read: true, write: legacy.exports.some(item =>
-            !!item && typeof item === 'object' && 'access' in item && item.access === 'rw') },
+        const exports = await readExports(transport, options);
+        return { version: 1, serverId: null, files: { read: true, write: exports.some(item => item.access === 'rw') },
         sync: { push: false }, process: { exec: false }, terminal: { pty: false }, executionModel: 'none',
         workspaceConsistency: 'none', readOnlyEnforcement: 'none', pathModel: 'none' };
     }
@@ -39,6 +39,7 @@ function parseCapabilities(value: unknown): RemoteServerCapabilities {
         || !['none', 'best-effort', 'kernel-enforced'].includes(v.readOnlyEnforcement)
         || !['none', 'host-mapped', 'virtual-root'].includes(v.pathModel)) throw invalid();
     if (v.process.exec && (!v.serverId || v.executionModel === 'none' || v.workspaceConsistency === 'none' || v.pathModel === 'none')) throw invalid();
+    if (v.processEpoch !== undefined && (typeof v.processEpoch !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(v.processEpoch))) throw invalid();
     if (v.terminal.pty && !v.process.exec) throw invalid();
     return structuredClone(v);
 }

@@ -1,14 +1,12 @@
+import { readExports, supportsMutations } from './protocol/exports';
+export type { RemoteExport } from './protocol/exports';
 import { checkOperation, FileStorageAdapter, FSError, createFileSystemSource,
     type FileStorageBackend, type FileReader, type FileMutations, type OperationOptions, type FilePage, type FileListOptions, type FileReadOptions } from '@itookit/vfs-core';
 import { HttpTransport, type HttpConnectionOptions } from './transport';
-import { StatBatch, validateStat } from './stat-batch';
+import { StatBatch } from './stat-batch';
+import { validateStat } from './protocol/stat';
 
 export interface HttpFileSourceOptions extends HttpConnectionOptions { alias: string; }
-export interface RemoteExport { alias: string; access: 'ro' | 'rw'; nameSemantics: string; strongRevision?: boolean; }
-
-/** Name equivalences the revision key can honour; an unlisted declaration stays read-only. */
-const STRONG_NAME_SEMANTICS = new Set(['source']);
-
 export class HttpFSBackend implements FileStorageBackend {
     readonly name = 'http';
     private initialized = false;
@@ -26,14 +24,10 @@ export class HttpFSBackend implements FileStorageBackend {
     }
     async init(options?: OperationOptions): Promise<void> {
         checkOperation(options); if (this.initialized) return;
-        const result = await this.http.json<{ version: number; exports: RemoteExport[] }>('v1/exports', {}, options);
-        if (result.version !== 1 || !Array.isArray(result.exports)) throw new FSError('ECAPABILITY', 'Unsupported file server protocol');
-        if (!result.exports.some(item => item.alias === this.options.alias)) throw new FSError('EACCES', 'Export unavailable');
-        // Strong conditional writes are only sound when the source declares a name equivalence the
-        // revision key can honour; an unknown declaration keeps the export read-only.
-        const target = result.exports.find(item => item.alias === this.options.alias);
-        const strongNames = typeof target?.nameSemantics === 'string' && STRONG_NAME_SEMANTICS.has(target.nameSemantics);
-        if (target?.access === 'rw' && target.strongRevision === true && strongNames) this.mutations = this.createMutations();
+        const exports = await readExports(this.http, options);
+        const target = exports.find(item => item.alias === this.options.alias);
+        if (!target) throw new FSError('EACCES', 'Export unavailable');
+        if (supportsMutations(target)) this.mutations = this.createMutations();
         this.initialized = true;
     }
     async close(): Promise<void> { this.http.close(); }
@@ -50,7 +44,9 @@ export class HttpFSBackend implements FileStorageBackend {
                 headers.set(condition.kind === 'create-only' ? 'If-None-Match' : 'If-Match', condition.kind === 'create-only' ? '*' : condition.revision);
                 const result = await this.http.mutate<import('@itookit/vfs-core').FileStat>(`${this.base}/content?${new URLSearchParams({ path: validPath(path) })}`,
                     { method: 'PUT', headers, body: data.slice().buffer }, `${this.base}/operations`, options);
-                validateStat(result); return result;
+                validateStat(result);
+                if (!result) throw new FSError('EIO', 'Missing replacement attributes');
+                return result;
             },
             mkdir: async (path, options) => { await command('mkdir', path, {}, options); return { kind: 'directory' }; },
             rename: async (path, to, options) => { await command('rename', path, { to: validPath(to) }, options); },
@@ -61,8 +57,9 @@ export class HttpFSBackend implements FileStorageBackend {
         const query = new URLSearchParams({ path: validPath(path) });
         if (options?.cursor) query.set('cursor', options.cursor);
         const page = await this.http.json<FilePage>(`${this.base}/entries?${query}`, {}, options);
-        if (!Array.isArray(page.entries) || !(page.nextCursor === null || typeof page.nextCursor === 'string')) throw new FSError('EIO', 'Invalid directory response');
-        for (const entry of page.entries) { validName(entry.name); validateStat(entry.stat); }
+        if (!page || !Array.isArray(page.entries) || !(page.nextCursor === null || typeof page.nextCursor === 'string')) throw new FSError('EIO', 'Invalid directory response');
+        for (const entry of page.entries) { validName(entry?.name); validateStat(entry?.stat);
+            if (!entry.stat) throw new FSError('EIO', 'Missing child attributes'); }
         return page;
     }
     private async read(path: string, options?: FileReadOptions) {
@@ -93,7 +90,8 @@ export class HttpFSBackend implements FileStorageBackend {
 }
 
 export async function openHttpFileSource(options: HttpFileSourceOptions, viewId = `http:${options.alias}`) {
-    const backend = new HttpFSBackend(options); await backend.init();
+    const backend = new HttpFSBackend(options);
+    try { await backend.init(); } catch (error) { await backend.close(); throw error; }
     return createFileSystemSource({ backend: new FileStorageAdapter(backend), viewId, access: backend.mutations ? 'rw' : 'ro', tags: false });
 }
 

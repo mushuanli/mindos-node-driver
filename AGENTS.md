@@ -9,3 +9,5 @@
 - `pnpm --filter @itookit/vfsdriver-http test` / `typecheck` 验证。
 
 设计见 [HTTP 文件系统](../../doc/design/vfs-http-driver.md)。
+
+内部职责与所有权见 [README](./README.md)。策略放在协议/策略模块，transport 不承载项目授权；共享来源与执行会话分别持有生命周期。
