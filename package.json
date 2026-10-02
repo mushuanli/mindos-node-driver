@@ -1,11 +1,69 @@
 {
   "name": "@itookit/vfsdriver-http",
-  "version": "0.1.0",
+  "version": "5.3.0",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "build": "tsup", "typecheck": "tsc --noEmit", "test": "vitest run" },
-  "dependencies": { "@itookit/vfs-core": "workspace:*" },
-  "devDependencies": { "tsup": "^8.5.1", "typescript": "^5.9.3", "vitest": "^3.2.4" }
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@itookit/vfs-core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      }
+    }
+  },
+  "description": "Platform-independent HTTP filesystem and process client for fs-agent, integrated with @itookit/vfs-core.",
+  "module": "./src/index.ts",
+  "files": [
+    "dist"
+  ],
+  "author": "lizlok@gmail.com",
+  "license": "MIT",
+  "keywords": [
+    "itookit",
+    "vfs",
+    "http",
+    "filesystem",
+    "fs-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mushuanli/itookit.git",
+    "directory": "packages/vfsdriver-http"
+  },
+  "bugs": {
+    "url": "https://github.com/mushuanli/itookit/issues"
+  },
+  "homepage": "https://github.com/mushuanli/itookit/tree/main/packages/vfsdriver-http#readme"
 }
