@@ -16,7 +16,8 @@ it('logs request context and preserves the network cause without logging credent
 });
 
 it('distinguishes a closed source from an aborted caller', async () => {
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const failures = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
         const transport = new HttpTransport({ endpoint: 'http://localhost:8080/', credential: () => '' });
         const caller = new AbortController(); caller.abort();
@@ -25,5 +26,6 @@ it('distinguishes a closed source from an aborted caller', async () => {
         transport.close();
         await expect(transport.json('v1/capabilities')).rejects.toMatchObject({ code: 'ECANCELLED' });
         expect(log.mock.calls.at(-1)?.[1]).toMatchObject({ cancellation: 'source-closed', sent: false });
-    } finally { log.mockRestore(); }
+        expect(failures).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); failures.mockRestore(); }
 });

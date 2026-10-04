@@ -30,12 +30,19 @@ export class HttpTransport {
     }
     get defaultTimeoutMs(): number { return this.config.timeoutMs ?? 30_000; }
     close() { this.lifetime.abort(new FSOperationCancelledError()); }
-    async json<T>(route: string, init: RequestInit = {}, options?: OperationOptions): Promise<T> {
+    async json<T>(route: string, init: RequestInit = {}, options?: OperationOptions, maxBytes = 4 * 1024 * 1024): Promise<T> {
         return this.request(route, init, options, async response => {
-            const data = await boundedBody(response, 4 * 1024 * 1024);
+            const data = await boundedBody(response, maxBytes);
             try { return JSON.parse(new TextDecoder().decode(data)) as T; }
             catch { throw new FSError('EIO', 'Invalid file server JSON', 'protocol'); }
         });
+    }
+    async jsonReply(route: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; value: unknown }> {
+        return this.request(route, init, undefined, async response => {
+            const bytes = await boundedBody(response, 4 * 1024 * 1024);
+            try { return { ok: response.ok, status: response.status, value: JSON.parse(new TextDecoder().decode(bytes)) }; }
+            catch { throw new FSError('EIO', 'Invalid server JSON', 'protocol'); }
+        }, false);
     }
     async content(route: string, init: RequestInit, options?: OperationOptions) {
         return this.request(route, init, options, async response => ({
@@ -45,17 +52,17 @@ export class HttpTransport {
         }));
     }
     private async request<T>(route: string, init: RequestInit, options: OperationOptions | undefined,
-        consume: (response: Response) => Promise<T>): Promise<T> {
+        consume: (response: Response) => Promise<T>, requireOk = true): Promise<T> {
         const scope = operationScope({ ...options, timeoutMs: options?.timeoutMs ?? this.config.timeoutMs ?? 30_000 }, this.lifetime.signal);
         let sent = false;
         try {
             checkOperation(scope.options);
             const token = await this.config.credential(); checkOperation(scope.options);
             const headers = new Headers(init.headers); headers.set('Authorization', this.authorization(token));
-            if (init.body) headers.set('Content-Type', 'application/json');
+            if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
             sent = true;
             const response = await this.send(route, { ...init, headers }, scope.options, scope.remaining);
-            if (!response.ok) throw await responseError(response);
+            if (requireOk && !response.ok) throw await responseError(response);
             return await consume(response);
         } catch (error) {
             reportHttpFailure(this.endpoint, route, init.method ?? 'GET', error, scope.options,

@@ -1,6 +1,23 @@
 import { it, expect, vi } from 'vitest';
 import { createHttpSourceProvider } from '../src/provider';
 
+it('shares saved credentials between filesystem checks and sync discovery', async () => {
+    const auth: (string | null)[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input, init) => {
+        auth.push(new Headers(init.headers).get('Authorization'));
+        const body = String(input).endsWith('/exports') ? { version: 1, exports: [] } : {
+            protocolVersion: 1, authorityId: 'a', namespaceId: 'n', historyEpoch: 'e', limits: {}, atomicPublish: true, durableOperations: true };
+        return new Response(JSON.stringify(body));
+    }));
+    const provider = createHttpSourceProvider(), connection = { endpoint: 'https://files.test', username: 'user', credentialRef: 'key' };
+    provider.setCredential('key', 'saved-secret'); const sync = provider.transport(connection);
+    try {
+        await provider.check(connection); await sync.json('v1/sync/capabilities');
+        provider.setCredential('key', 'updated-secret'); await sync.json('v1/sync/capabilities');
+        expect(auth).toEqual(['Basic ' + btoa('user:saved-secret'), 'Basic ' + btoa('user:saved-secret'), 'Basic ' + btoa('user:updated-secret')]);
+    } finally { sync.close(); await provider.dispose(); vi.unstubAllGlobals(); }
+});
+
 it('keeps stored passwords during draft checks and pages only directory entries', async () => {
     const seen: { url: URL; auth: string | null }[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {

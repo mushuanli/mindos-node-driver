@@ -1,4 +1,4 @@
-# HTTP VFS driver
+# @itookit/vfsdriver-agent
 
 平台无关的文件与进程客户端，只依赖 `vfs-core`。宿主注入 endpoint、凭据解析和可选 fetch；驱动不访问宿主目录，也不依赖工作台或 app-core。
 
@@ -42,10 +42,38 @@ Provider 的 `open()` 每次返回独立的释放句柄；相同 endpoint、身�
 ## 验证
 
 ```sh
-pnpm --filter @itookit/vfsdriver-http typecheck
-pnpm --filter @itookit/vfsdriver-http build
-pnpm --filter @itookit/vfsdriver-http test
-FS_AGENT_PROCESS_TEST=1 pnpm --filter @itookit/vfsdriver-http test
+pnpm --filter @itookit/vfsdriver-agent typecheck
+pnpm --filter @itookit/vfsdriver-agent build
+pnpm --filter @itookit/vfsdriver-agent test
+FS_AGENT_PROCESS_TEST=1 pnpm --filter @itookit/vfsdriver-agent test
 ```
 
-最后一项启用真实 fs-agent 隔离进程验证，需要 Linux 本地监听与 sandbox 能力。协议设计见 [vfs-http-driver](../../doc/design/vfs-http-driver.md)。
+最后一项启用真实 fs-agent 隔离进程验证，需要 Linux 本地监听与 sandbox 能力。协议设计见 [vfs-http-driver](https://github.com/mushuanli/itookit/blob/v5.3/doc/design/vfs-http-driver.md)。
+
+## 独立开发
+
+```sh
+git clone --recurse-submodules git@github.com:mushuanli/vfsdriver-agent.git
+cd vfsdriver-agent
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm pack
+```
+
+开发子模块 `vendor/vfs-core` 固定核心契约。itookit 中继续使用顶层 core；发布包不包含开发子模块，运行时仅依赖 vfs-core。来源与执行 API 保留 Http 命名，因为实际传输协议仍是 HTTP。
+
+独立默认测试不要求 Rust 服务端。真实协议测试需另行取得 fs-agent 仓库，在 Linux 上执行：
+
+```sh
+FS_AGENT_MANIFEST=/path/to/fs-agent/Cargo.toml pnpm exec vitest run tests/network.test.ts
+```
+
+未找到服务端时默认跳过网络集成用例；显式指定不存在的 manifest 则失败。itookit 内仍自动发现 `tools/fs-agent`。启用进程执行测试还需 `FS_AGENT_PROCESS_TEST=1` 和真实隔离权限。
+
+主仓库首次克隆后执行：
+
+```sh
+git submodule update --init --recursive packages/vfs-core packages/vfsdriver-agent
+```

@@ -9,9 +9,13 @@ import { once } from 'node:events';
 import { createFile } from '@itookit/vfs-core';
 import { HttpProcessSession, discoverServer, openHttpFileSource } from '../src';
 
-// The server lives in its own repository under tools/; this integration test only runs where that
-// Cargo manifest is present. The fixture below must match src/config.rs of that server.
-const manifest = resolve('../../tools/fs-agent/Cargo.toml');
+// Hosts can supply the independently maintained server for protocol verification.
+// Inside itookit, retain automatic discovery of its server submodule.
+const configuredManifest = process.env.FS_AGENT_MANIFEST;
+const manifest = resolve(configuredManifest ?? '../../tools/fs-agent/Cargo.toml');
+if (configuredManifest && (process.platform !== 'linux' || !existsSync(manifest))) {
+    throw new Error('FS_AGENT_MANIFEST requires Linux and an existing Cargo.toml');
+}
 
 it.skipIf(process.platform !== 'linux' || !existsSync(manifest))('reads, conditionally saves and cancels against the real Rust server', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'http-vfs-'));

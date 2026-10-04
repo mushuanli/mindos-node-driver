@@ -1,5 +1,5 @@
 {
-  "name": "@itookit/vfsdriver-http",
+  "name": "@itookit/vfsdriver-agent",
   "version": "5.3.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -23,7 +23,8 @@
   "devDependencies": {
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@types/node": "^22.0.0"
   },
   "publishConfig": {
     "access": "public",
@@ -59,11 +60,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/mushuanli/itookit.git",
-    "directory": "packages/vfsdriver-http"
+    "url": "git+ssh://git@github.com/mushuanli/vfsdriver-agent.git"
   },
   "bugs": {
-    "url": "https://github.com/mushuanli/itookit/issues"
+    "url": "https://github.com/mushuanli/vfsdriver-agent/issues"
   },
-  "homepage": "https://github.com/mushuanli/itookit/tree/main/packages/vfsdriver-http#readme"
+  "homepage": "https://github.com/mushuanli/vfsdriver-agent#readme",
+  "packageManager": "pnpm@10.20.0"
 }

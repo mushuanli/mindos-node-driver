@@ -12,6 +12,7 @@ type ServerConnection = Omit<RemoteConnection, 'alias'>;
 type CredentialResolver = (reference: string) => string | Promise<string>;
 
 export interface HttpSourceProvider {
+    transport(connection: ServerConnection): HttpTransport;
     open(connection: RemoteConnection, options?: OperationOptions): Promise<FileSystemSourceOwner>;
     process(connection: ServerConnection, spec: RemoteProcessSpec): Promise<Pick<HttpProcessSession, 'nativeShell' | 'release'>>;
     capabilities(connection: ServerConnection, options?: OperationOptions): Promise<RemoteServerCapabilities>;
@@ -92,7 +93,7 @@ class SourceProvider implements HttpSourceProvider {
         } finally { await backend.close(); }
     }
 
-    private transport(connection: ServerConnection, password?: string) {
+    transport(connection: ServerConnection, password?: string) {
         return new HttpTransport({ ...connection, credential: password ? () => password : this.credential(connection.credentialRef) });
     }
 

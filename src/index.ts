@@ -11,3 +11,8 @@ export type { RemoteServerCapabilities } from './capabilities';
 
 export { HttpProcessSession } from './process';
 export type { ExecOptions, RemoteProcessSpec } from './process';
+
+export { HttpTransport } from './transport';
+
+export { HttpSeqClient } from './seq/client';
+export type { HttpSeqChange, HttpSeqSnapshot } from './seq/client';
