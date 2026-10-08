@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { HttpTransport } from '../src/transport';
-import { discoverServer } from '../src/capabilities';
+import { HttpTransport } from '../../src/files/transport';
+import { discoverServer } from '../../src/files/capabilities';
 const caps = { version: 1, serverId: 'node-a', files: { read: true, write: false }, sync: { push: false },
     process: { exec: false }, terminal: { pty: false }, executionModel: 'none', workspaceConsistency: 'none',
     readOnlyEnforcement: 'none', pathModel: 'none' };

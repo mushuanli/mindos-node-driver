@@ -1,94 +1,84 @@
-import { HttpTransport } from '../src/transport';
-import { it, expect, vi } from 'vitest';
-import { existsSync } from 'node:fs';
+import { it, expect } from 'vitest';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, rm, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { once } from 'node:events';
-import { createFile } from '@itookit/vfs-core';
-import { HttpProcessSession, discoverServer, openHttpFileSource } from '../src';
+import { resolve, join, dirname } from 'node:path';
+import { createPiAgentDriver } from '../src/provider';
 
-// Hosts can supply the independently maintained server for protocol verification.
-// Inside itookit, retain automatic discovery of its server submodule.
-const configuredManifest = process.env.FS_AGENT_MANIFEST;
-const manifest = resolve(configuredManifest ?? '../../tools/fs-agent/Cargo.toml');
-if (configuredManifest && (process.platform !== 'linux' || !existsSync(manifest))) {
-    throw new Error('FS_AGENT_MANIFEST requires Linux and an existing Cargo.toml');
-}
-
-it.skipIf(process.platform !== 'linux' || !existsSync(manifest))('reads, conditionally saves and cancels against the real Rust server', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'http-vfs-'));
-    const root = join(directory, 'data');
-    const { mkdir } = await import('node:fs/promises'); await mkdir(root);
-    await writeFile(join(root, 'note.txt'), 'original');
-    const config = join(directory, 'server.toml');
-    // Single-user config: top-level credentials plus a flat export list.
-    await writeFile(config, `listen = "127.0.0.1:0"
-${process.env.FS_AGENT_PROCESS_TEST === '1' ? '' : 'execution = false'}
-username = "test"
-password_env = "TEST_FS_PASSWORD"
-
-[[exports]]
-alias = "docs"
-path = ${JSON.stringify(root)}
-access = "rw"
-`);
-    const password = 'integration-password';
-    const child = spawn('cargo', ['run', '--quiet', '--manifest-path', manifest, '--', config],
-        { env: { ...process.env, TEST_FS_PASSWORD: password }, stdio: ['ignore', 'ignore', 'pipe'] });
-    const exited = once(child, 'exit');
-    let output = '';
-    let owner: Awaited<ReturnType<typeof openHttpFileSource>> | undefined;
+const enabled = process.env.PI_AGENT_HARNESS_TEST === '1';
+const manifest = resolve(process.env.PI_AGENT_MANIFEST ?? '../../tools/pi-agent/Cargo.toml');
+it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio harness',async () => {
+    const root = await mkdtemp(join(tmpdir(),'itookit-harness-'));
+    const fixture = join(root,'codex.py'), config = join(root,'config.toml');
+    await writeFile(fixture,await readFile(join(dirname(manifest),'tests/fixtures/codex-app-server.py'))); await chmod(fixture,0o700);
+    await writeFile(config,`listen = "127.0.0.1:0"\nexecution = false\ntoken = "test-harness-token-0123456789"\n[[harnesses]]\nid = "codex"\nkind = "codex"\ncommand = ${JSON.stringify(fixture)}\nhome = ${JSON.stringify(root)}\n[[harnesses.workspaces]]\nid = "project"\npath = ${JSON.stringify(root)}\n`);
+    const home=join(root,'home'), exports=join(root,'exports'), catalog=join(root,'catalog');
+    await Promise.all([mkdir(home),mkdir(exports)]);
+    await writeFile(config,`listen = "127.0.0.1:0"\nserver_id = "network-node"\nexecution = false\ntoken = "test-harness-token-0123456789"\n[projects]\nroot = ${JSON.stringify(catalog)}\n[[exports]]\nalias = "home"\npath = ${JSON.stringify(exports)}\naccess = "rw"\n[[harnesses]]\nid = "codex"\nkind = "codex"\nprojects = true\ncommand = ${JSON.stringify(fixture)}\nhome = ${JSON.stringify(home)}\n[[harnesses.workspaces]]\nid = "project"\npath = ${JSON.stringify(home)}\n`);
+    const child = spawn('cargo' ,['run','--quiet','--offline','--manifest-path',manifest,'--',config],{ stdio:['ignore','ignore','pipe'] });
+    const exit = new Promise<void>(resolve => child.once('exit',() => resolve()));
+    let adapter: ReturnType<typeof createPiAgentDriver> | undefined;
     try {
-        const endpoint = await new Promise<string>((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('fs-server startup timeout')), 60_000);
-            child.stderr.on('data', data => {
-                output += data; const match = output.match(/listening on (127\.0\.0\.1:\d+)/);
-                if (match) { clearTimeout(timer); resolve(`http://${match[1]}`); }
+        const endpoint = await new Promise<string>((resolve,reject) => {
+            const timer = setTimeout(() => reject(new Error('pi-agent startup timed out')),20_000);
+            let buffer = '';
+            child.stderr.on('data',chunk => {
+                buffer += String(chunk);
+                for (const line of buffer.split('\n').slice(0,-1)) {
+                    try {
+                        const event = JSON.parse(line);
+                        if (event.event === 'server.ready') { clearTimeout(timer); resolve('http://' + event.fields.address); }
+                        if (event.event === 'server.start_failed') { clearTimeout(timer); reject(new Error(event.fields.error)); }
+                    } catch { /* Cargo diagnostics are not JSON. */ }
+                }
+                buffer = buffer.split('\n').at(-1) ?? '';
             });
-            child.once('error', error => { clearTimeout(timer); reject(error); });
-            child.once('exit', code => { clearTimeout(timer); reject(new Error(`fs-server exited ${code}: ${output}`)); });
+            child.once('error',error => { clearTimeout(timer); reject(error); });
+            child.once('exit',code => { clearTimeout(timer); reject(new Error('pi-agent exited: ' + code)); });
         });
-        owner = await openHttpFileSource({ endpoint, alias: 'docs', username: 'test', credential: () => password });
-        const a = createFile(owner.fs, '/note.txt'), b = createFile(owner.fs, '/note.txt');
-        expect(await a.read({ encoding: 'utf-8' })).toBe('original'); expect(await b.read({ encoding: 'utf-8' })).toBe('original');
-        await a.write('updated');
-        await expect(b.write('lost update')).rejects.toMatchObject({ code: 'ECONFLICT', outcome: 'not-committed' });
-        expect(await a.read({ encoding: 'utf-8' })).toBe('updated');
-        expect(new TextDecoder().decode(await owner.fs.driver.readContent('/note.txt', { encoding: 'binary', offset: 1, length: 3 }))).toBe('pda');
-        await owner.fs.driver.createFile({ parentPath: '/', name: 'new.txt', content: 'new' });
-        await owner.fs.driver.rename('/new.txt', 'moved.txt');
-        await owner.fs.driver.delete(['/moved.txt']);
-        const controller = new AbortController(); controller.abort();
-        await expect(owner.fs.driver.readContent('/note.txt', { signal: controller.signal })).rejects.toMatchObject({ code: 'ECANCELLED' });
-        if (process.env.FS_AGENT_PROCESS_TEST === '1') {
-            const transport = new HttpTransport({ endpoint, username: 'test', credential: () => password });
-            const caps = await discoverServer(transport);
-            expect(caps.process.exec).toBe(true);
-            const execution = new HttpProcessSession(transport, { serverId: caps.serverId!, epoch: caps.processEpoch!, cwd: '/workspace',
-                mounts: [{ alias: 'docs', path: '', at: '/workspace', access: 'rw' }] });
-            await b.read({ encoding: 'utf-8' });
-            const result = await execution.nativeShell.exec('/bin/bash', ['-c', 'pwd; echo shell > note.txt']);
-            expect(result.stdout.trim()).toBe('/workspace');
-            expect(await a.read({ encoding: 'utf-8' })).toBe('shell\n');
-            await expect(b.write('stale')).rejects.toMatchObject({ code: 'ECONFLICT' });
-            const stop = new AbortController();
-            const running = execution.nativeShell.exec('/bin/bash', ['-c', 'sleep 30'], { signal: stop.signal });
-            setTimeout(() => stop.abort(), 100);
-            await expect(running).rejects.toThrow();
-            await execution.release();
-        }
-        expect((await readdir(root)).filter(name => name.startsWith('.itookit-upload-'))).toEqual([]);
-        await vi.waitFor(() => expect(output).toContain('mutation.finished'));
-        const events = output.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
-        expect(events.some(event => event.event === 'mutation.accepted' && event.level === 'debug')).toBe(true);
-        expect(events.some(event => event.event === 'mutation.finished' && event.fields.outcome === 'committed')).toBe(true);
-        expect(events.filter(event => event.event === 'http.failed').every(event => event.fields.status >= 400)).toBe(true);
-        expect(output).not.toContain(password);
-        expect(output).not.toContain('pwd; echo shell');
-        if (process.env.FS_AGENT_PROCESS_TEST === '1') expect(events.some(event => event.event === 'process.finished')).toBe(true);
+        adapter = createPiAgentDriver(); adapter.setCredential('ref','test-harness-token-0123456789');
+        const descriptor = await adapter.discover({endpoint:endpoint + '/mcp',credentialRef:'ref'});
+        expect(descriptor).toMatchObject({version:1,fileProtocol:'fs-agent-http-v1',httpEndpoint:endpoint,harness:true,projects:true,projectProtocol:'fs-agent-project-v1'});
+        const projects=adapter.projects({endpoint,credentialRef:'ref'});
+        const project=await projects.register({name:'Nested',alias:'home',path:'nested',access:'rw',createDirectory:true});
+        expect(project.path).toBe('nested');
+        expect((await projects.register({name:'Other label',alias:'home',path:'nested/',access:'rw'})).id).toBe(project.id);
+        expect((await projects.list()).map(item => item.id)).toEqual([project.id]);
+        const files=await adapter.open({endpoint,alias:'home',credentialRef:'ref',serverProjectId:project.id,serverProjectRevision:project.revision,access:'rw'});
+        try {
+            await files.fs.driver.createFile({parentPath:'/nested',name:'note.txt',content:'scoped file'});
+            expect(await files.fs.driver.readContent('/nested/note.txt',{encoding:'utf-8'})).toBe('scoped file');
+            await expect(files.fs.driver.getChildren('/')).rejects.toMatchObject({code:'EACCES'});
+        } finally {await files.dispose();}
+        const readonly=await adapter.open({endpoint,alias:'home',credentialRef:'ref',serverProjectId:project.id,serverProjectRevision:project.revision,access:'ro'});
+        try {await expect(readonly.fs.driver.writeContent('/nested/note.txt','forbidden')).rejects.toMatchObject({code:'EROFS'});}finally{await readonly.dispose();}
+        const scope=projects.harness(project);
+        expect((await scope.profiles()).profiles[0].workspaces).toEqual([{id:project.id}]);
+        await expect(scope.create('codex',project.id)).rejects.toMatchObject({outcome:'not-committed',code:'ECAPABILITY'});
+        await scope.close(); await projects.close();
+        const client = adapter.harness({ endpoint,credentialRef:'ref' });
+        expect((await client.profiles()).profiles[0].kind).toBe('codex');
+        const { session } = await client.create('codex','project');
+        expect(session.createdAt).toBe(1791458500000);
+        expect(session.updatedAt).toBe(1791458565000);
+        expect((await client.list('codex')).sessions).toHaveLength(1);
+        expect((await client.read('codex',session.id)).turns).toEqual([]);
+        expect((await client.read('codex',session.id,{toolDetail:'summary'})).turns).toEqual([]);
+        await client.resume('codex',session.id);
+        const { turnId } = await client.turn('codex',session.id,'test');
+        let page = await client.events('codex',undefined,{toolDetail:'summary'});
+        for (let i=0;i<10 && !page.requests.length;i++) { await new Promise(resolve => setTimeout(resolve,20)); page = await client.events('codex',undefined,{toolDetail:'summary'}); }
+        expect(page.events.some(e => e.message.method === 'item/agentMessage/delta')).toBe(true);
+        expect(page.events.every(event => Number.isFinite(event.timestamp) && event.timestamp! > 0)).toBe(true);
+        await client.respond('codex',page.requests[0].id!,{ decision:'accept' });
+        await client.interrupt('codex',session.id,turnId);
+        await client.close();
+        const owned=await adapter.open({endpoint,alias:'home',credentialRef:'ref',serverProjectId:project.id,serverProjectRevision:project.revision,access:'ro'});
+        await adapter.dispose();
+        await expect(owned.fs.driver.readContent('/nested/note.txt',{encoding:'utf-8'})).rejects.toThrow();
     } finally {
-        await owner?.dispose(); child.kill('SIGINT'); await exited; await rm(directory, { recursive: true, force: true });
+        await adapter?.dispose(); child.kill('SIGINT');
+        const timer = setTimeout(() => child.kill('SIGKILL'),6000); await exit; clearTimeout(timer);
+        await rm(root,{recursive:true,force:true});
     }
-}, 90_000);
+},30_000);

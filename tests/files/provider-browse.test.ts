@@ -1,5 +1,5 @@
 import { it, expect, vi } from 'vitest';
-import { createHttpSourceProvider } from '../src/provider';
+import { createHttpSourceProvider } from '../../src/files/provider';
 
 it('shares saved credentials between filesystem checks and sync discovery', async () => {
     const auth: (string | null)[] = [];

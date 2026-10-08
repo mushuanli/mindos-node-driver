@@ -1,18 +1,16 @@
-export { HttpFSBackend, openHttpFileSource } from './backend';
-export type { HttpFileSourceOptions, RemoteExport } from './backend';
-export type { HttpConnectionOptions } from './transport';
-export { createHttpSourceProvider } from './provider';
-export type { HttpSourceProvider, RemoteConnection } from './provider';
+export { createPiAgentDriver } from './provider';
+export type { PiAgentDriver, PiAgentDescriptor } from './provider';
+export * from './files/index';
+export type { HarnessClient, HarnessMutationOptions, HarnessProfile, HarnessSession, HarnessPage, HarnessHistory, HarnessHistoryOptions, HarnessEvent, HarnessEvents, HarnessReceipt } from './harness/contracts';
 
-export { HttpMutationError } from './transport';
+export type { ProjectClient, RemoteProject, ProjectMount, RegisterProject, ProjectProcess } from './projects';
 
-export { discoverServer } from './capabilities';
-export type { RemoteServerCapabilities } from './capabilities';
+export type { DirectorySyncClient, DirectorySyncBinding, DirectorySyncInput, DirectorySyncPlan, DirectoryContent } from './directory-sync';
+export type { DirectorySyncDirection, DirectorySyncConflict, DirectorySyncComparison, SyncContentPreview } from './directory-sync';
 
-export { HttpProcessSession } from './process';
-export type { ExecOptions, RemoteProcessSpec } from './process';
+export { HarnessConversation } from './harness/conversation';
+export type { HarnessMessage, HarnessRequest } from './harness/conversation-model';
 
-export { HttpTransport } from './transport';
+export type { HarnessConversationJournal, HarnessRecovery } from './harness/conversation-journal';
 
-export { HttpSeqClient } from './seq/client';
-export type { HttpSeqChange, HttpSeqSnapshot } from './seq/client';
+export type { HarnessConversationPort, HarnessConversationSnapshot } from './harness/conversation';

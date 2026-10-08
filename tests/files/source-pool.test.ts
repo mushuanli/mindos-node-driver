@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import type { FileSystemSourceOwner } from '@itookit/vfs-core';
-import { SourcePool } from '../src/provider/source-pool';
+import { SourcePool } from '../../src/files/provider/source-pool';
 
 function deferred<T>() {
     let resolve!: (value: T) => void;

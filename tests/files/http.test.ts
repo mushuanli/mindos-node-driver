@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HttpFSBackend, openHttpFileSource } from '../src';
+import { HttpFSBackend, openHttpFileSource } from '../../src/files';
 
 const config = { endpoint: 'https://files.example/', alias: 'docs', credential: () => 'secret' };
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });

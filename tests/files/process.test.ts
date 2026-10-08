@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { HttpTransport } from '../src/transport';
-import { HttpProcessSession } from '../src/process';
+import { HttpTransport } from '../../src/files/transport';
+import { HttpProcessSession } from '../../src/files/process';
 const spec = { serverId: 'node', epoch: 'epoch', cwd: '/workspace', mounts: [{ alias: 'code', path: '', at: '/workspace', access: 'rw' as const }] };
 const status = (state = 'exited') => ({ state, stdout: 'output', stderr: '', code: 0, error: null, truncated: false });
 it('uses canonical cwd and the frozen mounts without replaying process creation', async () => {

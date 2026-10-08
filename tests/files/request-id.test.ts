@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { requestId } from '../src/request-id';
-import { HttpTransport } from '../src/transport';
-import { HttpProcessSession } from '../src/process';
+import { requestId } from '../../src/files/request-id';
+import { HttpTransport } from '../../src/files/transport';
+import { HttpProcessSession } from '../../src/files/process';
 const secureBytes = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
 afterEach(() => vi.unstubAllGlobals());
 
@@ -29,7 +29,7 @@ it('starts remote processes without randomUUID and logs server-side failure deta
     try {
         await expect(session.nativeShell.exec('bash', ['-c', 'ls'])).rejects.toThrow('spawn denied');
         expect(fetch).toHaveBeenCalledTimes(1);
-        expect(log).toHaveBeenCalledWith('[fs-agent] Process failed', expect.objectContaining({
+        expect(log).toHaveBeenCalledWith('[pi-agent] Process failed', expect.objectContaining({
             cwd: '/workspace', error: 'spawn denied', stderr: 'sandbox start failed', state: 'failed',
         }));
         expect(JSON.stringify(log.mock.calls)).not.toContain('secret');

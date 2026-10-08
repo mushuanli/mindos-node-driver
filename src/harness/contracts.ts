@@ -1,0 +1,40 @@
+import type { OperationOptions } from '@itookit/vfs-core';
+
+export interface HarnessProfile {
+    id: string; kind: string; projectRuntime?: boolean; workspaces: Array<{ id: string }>;
+    capabilities: { history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean };
+}
+export interface HarnessSession {
+    id: string; title: string; cwd: string | null; status: string | null; updatedAt: number | null; resumable: boolean;
+    createdAt?: number | null;
+    owned?: boolean;
+    parentSessionId?: string | null;
+    branchName?: string | null;
+    forkable?: boolean;
+    activeTurnId?: string | null;
+}
+export interface HarnessEvent { seq: number; timestamp?: number; message: { method: string; id?: string | number; params?: Record<string, unknown> } }
+export interface HarnessEvents {
+    epoch: string; cursor: number; gap: boolean; events: HarnessEvent[]; requests: Array<HarnessEvent['message']>;
+}
+export interface HarnessPage { sessions: HarnessSession[]; nextCursor: string | null }
+export interface HarnessHistory { session: HarnessSession; turns: unknown[] | null; nextCursor?: string | null }
+export interface HarnessEventsOptions extends OperationOptions { toolDetail?: 'summary' }
+export interface HarnessHistoryOptions extends HarnessEventsOptions { cursor?: string }
+export interface HarnessReceipt { requestId: string; outcome: 'committed' | 'not-committed' | 'unknown'; result?: unknown; code?: string }
+export interface HarnessMutationOptions extends OperationOptions { requestId?: string; epoch?: string }
+export interface HarnessClient {
+    profiles(options?: OperationOptions): Promise<{ epoch: string; profiles: HarnessProfile[] }>;
+    list(profileId: string, query?: { cursor?: string; archived?: boolean }, options?: OperationOptions): Promise<HarnessPage>;
+    read(profileId: string, sessionId: string, options?: HarnessHistoryOptions): Promise<HarnessHistory>;
+    inspect?(profileId: string, sessionId: string, options?: OperationOptions): Promise<{session: HarnessSession}>;
+    fork?(profileId: string, sessionId: string, name?: string, options?: HarnessMutationOptions): Promise<{session: HarnessSession}>;
+    create(profileId: string, workspaceId: string, options?: HarnessMutationOptions): Promise<{ session: HarnessSession }>;
+    resume(profileId: string, sessionId: string, options?: HarnessMutationOptions): Promise<{ session: HarnessSession }>;
+    turn(profileId: string, sessionId: string, prompt: string, options?: HarnessMutationOptions): Promise<{ turnId: string }>;
+    interrupt(profileId: string, sessionId: string, turnId: string, options?: HarnessMutationOptions): Promise<void>;
+    respond(profileId: string, nativeRequestId: string | number, response: Record<string, unknown>, options?: HarnessMutationOptions): Promise<void>;
+    events(profileId: string, cursor?: { after: number; eventEpoch: string }, options?: HarnessEventsOptions): Promise<HarnessEvents>;
+    operation(profileId: string, requestId: string, options?: HarnessMutationOptions): Promise<HarnessReceipt>;
+    close(): Promise<void>;
+}

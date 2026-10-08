@@ -6,7 +6,7 @@ export function reportHttpFailure(endpoint: URL, route: string, method: string, 
     const url = new URL(route, endpoint);
     const cancelled = sourceClosed || callerAborted;
     const log = cancelled ? console.debug : console.error;
-    log(cancelled ? '[fs-agent] Request cancelled' : '[fs-agent] Request failed', {
+    log(cancelled ? '[pi-agent] Request cancelled' : '[pi-agent] Request failed', {
         method, endpoint: endpoint.origin + endpoint.pathname, route: url.pathname,
         path: url.searchParams.get('path') ?? undefined,
         sent, cancellation: sourceClosed ? 'source-closed' : callerAborted ? 'caller-aborted'

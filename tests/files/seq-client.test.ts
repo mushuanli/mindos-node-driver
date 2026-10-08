@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { HttpSeqClient } from '../src/seq/client';
+import { HttpSeqClient } from '../../src/files/seq/client';
 
 it('sends structured SQLite SeqFile transactions with explicit revisions', async () => {
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {

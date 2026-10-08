@@ -1,106 +1,147 @@
-import { FSError, FileStorageAdapter, createFileSystemSource,
-    type FileSystemSourceOwner, type OperationOptions } from '@itookit/vfs-core';
-import { HttpFSBackend } from './backend';
-import { discoverServer, type RemoteServerCapabilities } from './capabilities';
-import { HttpProcessSession, type RemoteProcessSpec } from './process';
-import { SourcePool } from './provider/source-pool';
-import { readExports } from './protocol/exports';
-import { HttpTransport } from './transport';
+import { createHttpSourceProvider, type HttpSourceProvider, type RemoteConnection } from './files/index';
+import { FSError, createFileSystemSource, FileStorageAdapter, type FileSystemSourceOwner } from '@itookit/vfs-core';
+import { HttpFSBackend } from './files/index';
+import { HttpSyncClient } from './sync/client';
+import { MCPHarnessClient } from './harness/client';
+import { createHarnessRpc, type HarnessRpc } from './harness/rpc';
+import { MCPProjectClient, type ProjectClient, type RemoteProject } from './projects';
+import { createProjectProcess } from './project-process';
+import type { HarnessClient, HarnessProfile } from './harness/contracts';
+import type { HarnessConversationJournal } from './harness/conversation-journal';
+import { HarnessConversation, type HarnessConversationPort } from './harness/conversation';
 
-export interface RemoteConnection { endpoint: string; alias: string; credentialRef: string; username?: string; }
-type ServerConnection = Omit<RemoteConnection, 'alias'>;
-type CredentialResolver = (reference: string) => string | Promise<string>;
-
-export interface HttpSourceProvider {
-    transport(connection: ServerConnection): HttpTransport;
-    open(connection: RemoteConnection, options?: OperationOptions): Promise<FileSystemSourceOwner>;
-    process(connection: ServerConnection, spec: RemoteProcessSpec): Promise<Pick<HttpProcessSession, 'nativeShell' | 'release'>>;
-    capabilities(connection: ServerConnection, options?: OperationOptions): Promise<RemoteServerCapabilities>;
-    check(connection: ServerConnection, options?: OperationOptions): Promise<void>;
-    checkDraft(connection: ServerConnection, password: string, options?: OperationOptions): Promise<void>;
-    browse(connection: ServerConnection, path: string, cursor?: string, options?: OperationOptions): Promise<{ paths: string[]; nextCursor: string | null }>;
-    setCredential(reference: string, secret: string): () => void;
-    clearCredential(reference: string): void;
-    dispose(): Promise<void>;
+type Connection = Omit<RemoteConnection, 'alias'>;
+export interface PiAgentDescriptor { version: 1; httpEndpoint: string; serverId: string | null; fileProtocol: 'fs-agent-http-v1'; harness: boolean; projects?: boolean; sync?: boolean; projectProtocol?: string; directorySync?: boolean; directorySyncVersion?: number; }
+export interface PiAgentDriver extends HttpSourceProvider {
+    open(connection: RemoteConnection & {serverProjectId?: string; serverProjectRevision?: number; access?: 'ro' | 'rw'}, options?: import('@itookit/vfs-core').OperationOptions): ReturnType<HttpSourceProvider['open']>;
+    resolveCredential(reference: string): Promise<string>;
+    discover(connection: Connection, options?: import('@itookit/vfs-core').OperationOptions): Promise<PiAgentDescriptor>;
+    conversation(client: HarnessClient, profile: HarnessProfile, workspaceId: string, sessionId?: string, writable?: boolean, journal?: HarnessConversationJournal): HarnessConversationPort;
+    harness(connection: Connection): HarnessClient;
+    projects(connection: Connection): ProjectClient;
+    projectProcess(connection: Connection, project: RemoteProject, spec: Parameters<HttpSourceProvider['process']>[1]): ReturnType<HttpSourceProvider['process']>;
+    sync(connection: Connection, historyEpoch: string): HttpSyncClient;
 }
 
-export function createHttpSourceProvider(resolveCredential?: CredentialResolver): HttpSourceProvider {
-    return new SourceProvider(resolveCredential);
-}
-
-/** Host-facing composition; pooling and wire protocol have independent owners. */
-class SourceProvider implements HttpSourceProvider {
-    private readonly credentials = new Map<string, string>();
-    private readonly sources = new SourcePool();
-    constructor(private readonly resolveCredential?: CredentialResolver) {}
-
-    private credential(reference: string) {
-        return async () => {
-            const secret = this.credentials.get(reference) ?? await this.resolveCredential?.(reference);
-            if (!secret) throw new FSError('EACCES', 'Remote credentials required', 'credential');
-            return secret;
-        };
-    }
-
-    clearCredential(reference: string) { this.credentials.delete(reference); }
-    setCredential(reference: string, secret: string) {
-        const previous = this.credentials.get(reference);
-        this.credentials.set(reference, secret);
-        return () => { if (previous === undefined) this.credentials.delete(reference); else this.credentials.set(reference, previous); };
-    }
-
-    async process(connection: ServerConnection, spec: RemoteProcessSpec) {
-        const owner = new HttpProcessSession(this.transport(connection), spec);
-        return { nativeShell: owner.nativeShell, release: () => owner.release() };
-    }
-
-    open(connection: RemoteConnection, options?: OperationOptions): Promise<FileSystemSourceOwner> {
-        return this.sources.acquire(connectionKey(connection), async signal => {
-            const backend = new HttpFSBackend({ ...connection, credential: this.credential(connection.credentialRef) });
+/** A single credential owner; file, sync and harness clients retain independent lifetimes. */
+export function createPiAgentDriver(resolveCredential?: (reference: string) => string | Promise<string>, fetch = globalThis.fetch): PiAgentDriver {
+    const secrets = new Map<string, string>();
+    const credential = async (ref: string) => {
+        const value = secrets.get(ref) ?? await resolveCredential?.(ref);
+        if (!value) throw new FSError('EACCES', 'Remote credentials required'); return value;
+    };
+    const files = createHttpSourceProvider(credential, fetch);
+    const openFiles = files.open.bind(files);
+    const disposeFiles = files.dispose.bind(files);
+    const clients = new Set<{close(): Promise<void>}>();
+    const processes = new Set<{release(): Promise<void>}>();
+    const projectFiles = new Set<FileSystemSourceOwner>();
+    return Object.assign(files, {
+        resolveCredential: credential,
+        conversation: (client: HarnessClient, profile: HarnessProfile, workspaceId: string, sessionId?: string, writable?: boolean, journal?: HarnessConversationJournal) => new HarnessConversation(client, profile, workspaceId, sessionId, writable, journal),
+        async discover(connection: Connection, options?: import('@itookit/vfs-core').OperationOptions): Promise<PiAgentDescriptor> {
+            const rpc = createHarnessRpc(connection.endpoint, authenticatedFetch(connection, credential, fetch), true);
             try {
-                await backend.init({ signal });
-                return createFileSystemSource({ backend: new FileStorageAdapter(backend), viewId: `http:${connection.credentialRef}`,
-                    access: backend.mutations ? 'rw' : 'ro', tags: false });
-            } catch (error) { await backend.close(); throw error; }
-        }, options);
-    }
-
-    async capabilities(connection: ServerConnection, options?: OperationOptions) {
-        const transport = this.transport(connection);
-        try { return await discoverServer(transport, options); } finally { transport.close(); }
-    }
-
-    check(connection: ServerConnection, options?: OperationOptions) { return this.checkDraft(connection, '', options); }
-    async checkDraft(connection: ServerConnection, password: string, options?: OperationOptions) {
-        const transport = this.transport(connection, password);
-        try { await readExports(transport, options); } finally { transport.close(); }
-    }
-
-    async browse(connection: ServerConnection, path: string, cursor?: string, options?: OperationOptions) {
-        if (path === '/') {
-            const transport = this.transport(connection);
+                const value = await discoverCapabilities(rpc,options);
+                if (value?.version !== 1 || value.fileProtocol !== 'fs-agent-http-v1' || typeof value.harness !== 'boolean' || typeof value.httpEndpoint !== 'string'
+                    || !(value.serverId === null || typeof value.serverId === 'string')) throw new FSError('ECAPABILITY', 'Invalid pi-agent discovery');
+                const mcp = new URL(connection.endpoint), http = new URL(value.httpEndpoint, mcp);
+                if (http.origin !== mcp.origin || http.username || http.password || http.search || http.hash) throw new FSError('EACCES', 'Invalid pi-agent HTTP endpoint');
+                return { ...value, httpEndpoint: http.href.replace(/\/+$/, '') };
+            } finally { await rpc.close(); }
+        },
+        setCredential(ref: string, value: string) {
+            const previous = secrets.get(ref); secrets.set(ref, value);
+            return () => { if (previous === undefined) secrets.delete(ref); else secrets.set(ref, previous); };
+        },
+        clearCredential(ref: string) { secrets.delete(ref); },
+        harness(connection: Connection) {
+            const snapshot = { ...connection };
+            const client = new MCPHarnessClient(createHarnessRpc(snapshot.endpoint, authenticatedFetch(snapshot, credential, fetch)));
+            const close = client.close.bind(client);
+            client.close = async () => { clients.delete(client); await close(); };
+            clients.add(client); return client;
+        },
+        async open(connection: RemoteConnection & {serverProjectId?: string; serverProjectRevision?: number; access?: 'ro' | 'rw'}, options?: import('@itookit/vfs-core').OperationOptions) {
+            if (!connection.serverProjectId) return openFiles(connection,options);
+            const scopedFetch: typeof globalThis.fetch = (input,init) => {
+                const headers=new Headers(init?.headers); headers.set('x-fsagent-project',connection.serverProjectId!);
+                headers.set('x-fsagent-project-revision',String(connection.serverProjectRevision));
+                headers.set('x-fsagent-project-readonly',String(connection.access==='ro'));
+                return fetch(input,{...init,headers});
+            };
+            const backend=new HttpFSBackend({...connection,credential:() => credential(connection.credentialRef),fetch:scopedFetch});
             try {
-                const exports = await readExports(transport, options);
-                return { paths: exports.map(item => `/${item.alias}`), nextCursor: null };
-            } finally { transport.close(); }
-        }
-        if (!/^\/[a-zA-Z0-9_-]+(?:\/[^/]+)*$/.test(path)) throw new FSError('EINVAL', 'Invalid browse path');
-        const [, alias, ...segments] = path.split('/');
-        const backend = new HttpFSBackend({ ...connection, alias, credential: this.credential(connection.credentialRef) });
-        try {
-            const page = await backend.files.list(segments.join('/'), { ...options, cursor });
-            return { paths: page.entries.filter(item => item.stat.kind === 'directory').map(item => `${path}/${item.name}`), nextCursor: page.nextCursor };
-        } finally { await backend.close(); }
+                await backend.init(options);
+                const owner=await createFileSystemSource({backend:new FileStorageAdapter(backend),viewId:`project:${connection.serverProjectId}:${connection.alias}`,access:connection.access ?? 'ro',tags:false});
+                const dispose=owner.dispose.bind(owner);
+                owner.dispose=async () => {await dispose();projectFiles.delete(owner);};
+                projectFiles.add(owner);return owner;
+            }
+            catch(error) {await backend.close();throw error;}
+        },
+        async projectProcess(connection: Connection, project: RemoteProject, spec: Parameters<HttpSourceProvider['process']>[1]) {
+            const projects = new MCPProjectClient(createHarnessRpc(connection.endpoint,authenticatedFetch(connection,credential,fetch)));
+            try {
+                const owner=createProjectProcess({endpoint:connection.endpoint,username:connection.username,credential:() => credential(connection.credentialRef),fetch},projects,project,spec);
+                const release=owner.release.bind(owner);
+                owner.release=async () => {await release(); processes.delete(owner);};
+                processes.add(owner); return owner;
+            }
+            catch(error) {await projects.close(); throw error;}
+        },
+        projects(connection: Connection) {
+            const client = new MCPProjectClient(createHarnessRpc(connection.endpoint,authenticatedFetch(connection,credential,fetch)));
+            const close = client.close.bind(client);
+            client.close = async () => { clients.delete(client); await close(); };
+            clients.add(client); return client;
+        },
+        sync(connection: Connection, historyEpoch: string) { return new HttpSyncClient(files.transport(connection), historyEpoch); },
+        async dispose() {
+            const results = await Promise.allSettled([...processes].map(p => p.release()));
+            results.push(...await Promise.allSettled([...clients].map(c => c.close())));
+            results.push(...await Promise.allSettled([...projectFiles].map(owner => owner.dispose())));
+            results.push(...await Promise.allSettled([disposeFiles()]));
+            const errors = results.flatMap(r => r.status === 'rejected' ? [r.reason] : []);
+            if (errors.length) throw new AggregateError(errors, 'pi-agent resources failed to close');
+            secrets.clear();
+        },
+    });
+}
+async function discoverCapabilities(rpc: HarnessRpc,options?: import('@itookit/vfs-core').OperationOptions): Promise<PiAgentDescriptor> {
+    const metadata = await rpc.metadata?.(options);
+    if (Object.hasOwn(metadata ?? {},'itookit/pi-agent')) return metadata!['itookit/pi-agent'] as PiAgentDescriptor;
+    try { return await rpc.call('piagent_capabilities',{},options) as PiAgentDescriptor; }
+    catch (error) {
+        const failure=error as {remoteCode?: string; code?: string | number};
+        if (failure.remoteCode!=='ECAPABILITY' && failure.code!==-32601) throw error;
+        return await rpc.call('fsagent_capabilities',{},options) as PiAgentDescriptor;
     }
-
-    transport(connection: ServerConnection, password?: string) {
-        return new HttpTransport({ ...connection, credential: password ? () => password : this.credential(connection.credentialRef) });
-    }
-
-    async dispose() { this.credentials.clear(); await this.sources.dispose(); }
 }
 
-/** Credential identity participates in sharing; the secret itself never does. */
-function connectionKey(connection: RemoteConnection): string {
-    return JSON.stringify([connection.endpoint, connection.alias, connection.credentialRef, connection.username ?? '']);
+function authenticatedFetch(connection: Connection, credential: (ref: string) => Promise<string>, fetch: typeof globalThis.fetch): typeof globalThis.fetch {
+    const endpoint = new URL(connection.endpoint);
+    if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
+        throw new FSError('EINVAL', 'Invalid agent endpoint');
+    return async (input, init) => {
+        const headers = new Headers(init?.headers), secret = await credential(connection.credentialRef);
+        const bytes = new TextEncoder().encode(`${connection.username}:${secret}`);
+        if (connection.username !== undefined && (!connection.username || /[:\r\n]/.test(connection.username))) throw new FSError('EINVAL', 'Invalid username');
+        headers.set('Authorization', connection.username === undefined ? `Bearer ${secret}` : `Basic ${btoa(Array.from(bytes,b => String.fromCharCode(b)).join(''))}`);
+        const response = await fetch(input, { ...init, headers, redirect: 'error', credentials: 'omit', cache: 'no-store' });
+        return boundedResponse(response);
+    };
+}
+
+function boundedResponse(response: Response): Response {
+    if (!response.body) return response;
+    let bytes = 0;
+    const stream = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk,controller) {
+            bytes += chunk.byteLength;
+            if (bytes > 32 * 1024 * 1024) throw new FSError('EFBIG', 'Harness response exceeds the read limit');
+            controller.enqueue(chunk);
+        },
+    }));
+    return new Response(stream,{ status:response.status,statusText:response.statusText,headers:response.headers });
 }

@@ -1,5 +1,5 @@
 import { it, expect, vi } from 'vitest';
-import { HttpTransport } from '../src/transport';
+import { HttpTransport } from '../../src/files/transport';
 
 it.each([true, false])('rejects oversized bodies with EFBIG and cancels them (Content-Length=%s)', async declared => {
     const cancel = vi.fn();
