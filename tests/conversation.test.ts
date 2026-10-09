@@ -232,7 +232,7 @@ it('denies metadata mutations on read-only, unsupported, busy and unowned archiv
     const readonly = new HarnessConversation(client, managed, 'p', 's', false); await readonly.read();
     await expect(readonly.rename('Denied')).rejects.toMatchObject({code: 'EACCES'});
     await expect(readonly.archive(true)).rejects.toMatchObject({code: 'EACCES'});
-    vi.mocked(client.read).mockResolvedValue({session: {...session, status: 'notLoaded', owned: false}, turns: []});
+    vi.mocked(client.read).mockResolvedValue({session: {...session, status: 'idle', owned: false}, turns: []});
     const external = new HarnessConversation(client, managed, 'p', 's'); await external.read();
     await expect(external.archive(true)).rejects.toMatchObject({code: 'EACCES'});
     expect(client.archive).not.toHaveBeenCalled(); await readonly.close(); await external.close();
@@ -275,4 +275,46 @@ it('rejects invalid attachment drafts before persisting receipts or starting a n
     await expect(view.send('Review', [{kind: 'image', name: 'image.png', mimeType: 'image/png', content: 'http://localhost/private'}])).rejects.toMatchObject({code: 'EINVAL'});
     await expect(view.saveDraft('Review', [{kind: 'text', name: 'notes', content: 'x'.repeat(65537)}])).rejects.toMatchObject({code: 'EINVAL'});
     expect(client.turn).not.toHaveBeenCalled(); expect(view.snapshot().pending).toBe(false); await view.close();
+});
+
+it('recovers permanent deletion from the receipt before reading missing history and never replays it', async () => {
+    const client = peer(), capable = {...profile, capabilities: {...profile.capabilities, delete: true}};
+    let record: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => record, save: async (value: HarnessRecovery) => {record = structuredClone(value);}};
+    client.delete = vi.fn(async () => {throw {outcome: 'unknown'};});
+    const first = new HarnessConversation(client, capable, 'p', 's', true, journal); await first.read();
+    await expect(first.delete()).rejects.toMatchObject({outcome: 'unknown'}); await first.close();
+    vi.mocked(client.read).mockRejectedValue(new Error('History permanently deleted'));
+    vi.mocked(client.operation).mockResolvedValue({requestId: record!.pending!.requestId, outcome: 'committed', result: {deletedSessionIds: ['s', 'child']}});
+    const restored = new HarnessConversation(client, capable, 'p', 's', true, journal);
+    expect(await restored.read()).toMatchObject({deletedSessionIds: ['s', 'child'], pending: false, canSend: false, canDelete: false, messages: []});
+    expect(client.read).toHaveBeenCalledOnce(); expect(client.delete).toHaveBeenCalledOnce();
+    expect(record!.deletedSessionIds).toEqual(['s', 'child']); await restored.close();
+    const reopened = new HarnessConversation(client, capable, 'p', 's', true, journal);
+    expect((await reopened.read()).deletedSessionIds).toEqual(['s', 'child']);
+    expect(client.read).toHaveBeenCalledOnce(); await reopened.close();
+});
+it('deletes only idle owned or archived unloaded sessions with a writable native capability', async () => {
+    const client = peer(), capable = {...profile, capabilities: {...profile.capabilities, delete: true}};
+    client.delete = vi.fn(async () => ({deletedSessionIds: ['s']}));
+    for (const state of [{status: 'active', owned: true}, {status: 'notLoaded', owned: false}, {status: 'idle', owned: false}]) {
+        vi.mocked(client.read).mockResolvedValue({session: {...session, ...state}, turns: []});
+        const view = new HarnessConversation(client, capable, 'p', 's'); await view.read();
+        await expect(view.delete()).rejects.toMatchObject({code: 'EACCES'}); await view.close();
+    }
+    vi.mocked(client.read).mockResolvedValue({session: {...session, status: 'notLoaded', owned: false, archived: true}, turns: []});
+    const readonly = new HarnessConversation(client, capable, 'p', 's', false); await readonly.read();
+    await expect(readonly.delete()).rejects.toMatchObject({code: 'EACCES'}); await readonly.close();
+    const view = new HarnessConversation(client, capable, 'p', 's'); await view.read();
+    expect((await view.delete()).deletedSessionIds).toEqual(['s']); expect(client.resume).not.toHaveBeenCalled(); await view.close();
+});
+
+it('archives unloaded native history without acquiring ownership or claiming external inactivity', async () => {
+    const client = peer(), capable = {...profile, capabilities: {...profile.capabilities, archive: true}};
+    vi.mocked(client.read).mockResolvedValue({session: {...session, status: 'notLoaded', owned: false}, turns: []});
+    client.archive = vi.fn(async () => ({session: {...session, status: 'notLoaded', owned: false, archived: true}}));
+    const view = new HarnessConversation(client, capable, 'p', 's');
+    expect(await view.read()).toMatchObject({canArchive: true, observation: {execution: 'unknown', rawStatus: 'notLoaded'}});
+    expect(await view.archive(true)).toMatchObject({archived: true, canSend: false});
+    expect(client.resume).not.toHaveBeenCalled(); expect(client.turn).not.toHaveBeenCalled(); await view.close();
 });

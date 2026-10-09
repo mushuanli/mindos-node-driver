@@ -1,5 +1,6 @@
 import type { HarnessAttachment } from './contracts';
 export interface HarnessRecovery {
+    deletedSessionIds?: string[];
     draft?: string;
     draftAttachments?: HarnessAttachment[];
     sessionId?: string;

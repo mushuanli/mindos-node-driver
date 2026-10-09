@@ -94,3 +94,9 @@ it('a disconnected Claude process does not disconnect another owned session', as
     await observer.poll(); vi.mocked(client.events).mockResolvedValue({...page, cursor: 1, events: [{seq: 1, message: {method: 'harness/disconnected', params: {threadId: 's'}}}]});
     const rows = await observer.poll(); expect(rows.find(row => row.sessionId === 's')?.observation.connection).toBe('offline'); expect(rows.find(row => row.sessionId === 'other')?.observation.connection).toBe('online');
 });
+
+it('carries native update time without granting execution state or control permissions', () => {
+    const updatedAt = Date.now();
+    expect(harnessObservation({...session, status: 'notLoaded', updatedAt})).toMatchObject({updatedAt,
+        execution: 'unknown', canInterrupt: false, canRespond: false, owned: false});
+});

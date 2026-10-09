@@ -2,7 +2,7 @@ import type { OperationOptions } from '@itookit/vfs-core';
 
 export interface HarnessProfile {
     id: string; kind: string; projectRuntime?: boolean; workspaces: Array<{ id: string }>;
-    capabilities: { history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; attachments?: Array<'text' | 'image'> };
+    capabilities: { history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; delete?: boolean; attachments?: Array<'text' | 'image'> };
 }
 export interface HarnessSession {
     id: string; title: string; cwd: string | null; status: string | null; updatedAt: number | null; resumable: boolean;
@@ -30,6 +30,7 @@ export interface HarnessAttachment {kind: 'text' | 'image'; name: string; conten
 export interface HarnessTurnOptions extends HarnessMutationOptions {attachments?: HarnessAttachment[]}
 export interface HarnessClient {
     directoryVersion?(options?: import('@itookit/vfs-core').OperationOptions): Promise<string | undefined>;
+    delete?(profileId: string, sessionId: string, options?: HarnessMutationOptions): Promise<{deletedSessionIds: string[]}>;
     rename?(profileId: string, sessionId: string, name: string, options?: HarnessMutationOptions): Promise<{session: HarnessSession}>;
     archive?(profileId: string, sessionId: string, archived: boolean, options?: HarnessMutationOptions): Promise<{session: HarnessSession}>;
     search?(profileId: string, query: {query: string; mode: 'title' | 'content'; archived?: boolean}, options?: OperationOptions): Promise<HarnessSearchResult>;

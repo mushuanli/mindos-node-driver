@@ -1,7 +1,7 @@
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessProfile, HarnessSession, HarnessEvents, HarnessAttachment } from './contracts';
 import { conversationBranches } from './branches';
-import { validateAttachments, validateSession } from './validation';
+import { validateAttachments, validateDeletedSessionIds, validateSession } from './validation';
 import { applyHarnessStatus, harnessObservation } from './state';
 import type { HarnessConversationJournal } from './conversation-journal';
 import { mergeMessages, historyMessages, nativeMessage, nativeRequest, type HarnessMessage, type HarnessRequest } from './conversation-model';
@@ -15,6 +15,7 @@ export class HarnessConversation implements HarnessConversationPort {
     private readonly completed = new Set<string>();
     private readonly completedItems = new Set<string>();
     private pending?: {requestId: string; epoch: string; operation: string};
+    private deletedSessionIds: string[] = [];
     private loaded = false;
     private earlier?: string;
     private expandedHistory = false;
@@ -42,22 +43,25 @@ export class HarnessConversation implements HarnessConversationPort {
         const observation = harnessObservation(this.session, this.requests, {observedAt: this.observedAt, source: this.source,
             connection: this.disconnected ? 'offline' : 'online', stale: Date.now() - this.observedAt > 30_000,
             receiptUnknown: !!this.pending});
-        const controllable = !this.lifetime.signal.aborted && !this.disconnected && !observation.stale && this.writable && !this.busy && !this.pending && !!this.session?.owned;
-        const manageable = this.loaded && !!this.session && !this.lifetime.signal.aborted && !this.disconnected && !observation.stale && this.writable && !this.busy && !this.pending;
+        const controllable = !this.deletedSessionIds.length && !this.lifetime.signal.aborted && !this.disconnected && !observation.stale && this.writable && !this.busy && !this.pending && !!this.session?.owned;
+        const manageable = !this.deletedSessionIds.length && this.loaded && !!this.session && !this.lifetime.signal.aborted && !this.disconnected && !observation.stale && this.writable && !this.busy && !this.pending;
         observation.canInterrupt = controllable && !!this.session?.activeTurnId && this.profile.capabilities.interrupt;
         observation.canRespond = controllable && !!this.requests.length && this.profile.capabilities.interactions;
         return {observation, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
             attachments: this.writable ? this.profile.capabilities.attachments : undefined,
+            deletedSessionIds: this.deletedSessionIds.slice(),
+            canDelete: manageable && !!this.client.delete && !!this.profile.capabilities.delete
+                && (observation.execution === 'idle' && !!this.session?.owned || !!this.session?.archived && this.session?.status === 'notLoaded'),
             archived: !!this.session?.archived,
             canRename: manageable && !!this.client.rename && !!this.profile.capabilities.rename,
-            canArchive: manageable && !this.session?.archived && !!this.session?.owned && observation.execution === 'idle' && !!this.client.archive && !!this.profile.capabilities.archive,
+            canArchive: manageable && !this.session?.archived && (this.session?.status === 'notLoaded' || !!this.session?.owned && observation.execution === 'idle') && !!this.client.archive && !!this.profile.capabilities.archive,
             canUnarchive: manageable && !!this.session?.archived && !!this.client.archive && !!this.profile.capabilities.unarchive,
             createdAt: this.session?.createdAt, updatedAt: this.session?.updatedAt,
             branchName: this.session?.branchName ?? (this.session?.parentSessionId ? undefined : 'main'),
             messages: this.messages.map(m => ({...m})), requests: this.requests.map(r => ({...r})),
             hasEarlier: !!this.earlier,
-            canFork: !this.session?.archived && !this.lifetime.signal.aborted && this.loaded && this.writable && !this.busy && !active && !this.pending && !this.disconnected && !this.navigationSessionId && !!this.session && this.messages.some(message => message.role === 'user' || message.role === 'assistant') && !!this.client.fork && !!this.profile.capabilities.fork && this.session.forkable !== false,
-            canSend: !this.session?.archived && !this.navigationSessionId && this.loaded && !this.lifetime.signal.aborted && this.writable && !this.busy && !active && !this.pending && !this.disconnected && (this.session ? this.session.resumable && (this.session.owned || this.profile.capabilities.resume) : this.profile.capabilities.create),
+            canFork: !this.deletedSessionIds.length && !this.session?.archived && !this.lifetime.signal.aborted && this.loaded && this.writable && !this.busy && !active && !this.pending && !this.disconnected && !this.navigationSessionId && !!this.session && this.messages.some(message => message.role === 'user' || message.role === 'assistant') && !!this.client.fork && !!this.profile.capabilities.fork && this.session.forkable !== false,
+            canSend: !this.deletedSessionIds.length && !this.session?.archived && !this.navigationSessionId && this.loaded && !this.lifetime.signal.aborted && this.writable && !this.busy && !active && !this.pending && !this.disconnected && (this.session ? this.session.resumable && (this.session.owned || this.profile.capabilities.resume) : this.profile.capabilities.create),
             canInterrupt: observation.canInterrupt,
             canRespond: observation.canRespond,
             active, pending: !!this.pending, disconnected: this.disconnected, gap: this.gap};
@@ -66,11 +70,12 @@ export class HarnessConversation implements HarnessConversationPort {
         if (this.loaded) return;
         const record = await this.journal?.load();
         if (record?.sessionId && !this.session) this.session = {id: record.sessionId, title: record.sessionId, cwd: null, status: null, updatedAt: null, resumable: false};
+        this.deletedSessionIds = record?.deletedSessionIds ?? [];
         this.pending = record?.pending; this.draft = record?.draft ?? '';
         this.draftAttachments = validateAttachments(record?.draftAttachments); this.loaded = true;
     }
     private save(sessionId = this.session?.id): Promise<void> {
-        const record = {sessionId, pending: this.pending, draft: this.draft, draftAttachments: this.draftAttachments};
+        const record = {sessionId, deletedSessionIds: this.deletedSessionIds, pending: this.pending, draft: this.draft, draftAttachments: this.draftAttachments};
         const write = this.writes.then(() => this.journal?.save(record));
         this.writes = write.catch(() => {}); return write;
     }
@@ -86,6 +91,7 @@ export class HarnessConversation implements HarnessConversationPort {
             try { await this.save(); } catch (error) { this.pending = undefined; throw error; }
             const result = await call({...this.options(), ...this.pending});
             const session = (result as {session?: HarnessSession} | undefined)?.session;
+            if (operation === 'delete') this.deletedSessionIds = (result as {deletedSessionIds: string[]}).deletedSessionIds;
             if (operation === 'turn') { this.draft = ''; this.draftAttachments = []; }
             const pending = this.pending; this.pending = undefined;
             try { await this.save(session?.id ?? this.session?.id); } catch (error) { this.pending = pending; throw error; }
@@ -95,8 +101,10 @@ export class HarnessConversation implements HarnessConversationPort {
             throw error;
         }
     }
-    async read() {
+    async read(): Promise<HarnessConversationSnapshot> {
         await this.restore();
+        if (this.pending?.operation === 'delete') return this.reconcile();
+        if (this.deletedSessionIds.length) return this.snapshot();
         if (this.session) {
             const history = await this.client.read(this.profile.id, this.session.id, {...this.options(), toolDetail: 'summary'});
             const messages = historyMessages(history);
@@ -131,6 +139,7 @@ export class HarnessConversation implements HarnessConversationPort {
         });
     }
     async poll() {
+        if (this.deletedSessionIds.length) return this.snapshot();
         try {
             const page = await this.client.events(this.profile.id, this.cursor, {...this.options(), toolDetail: 'summary'});
             this.disconnected = false;
@@ -218,6 +227,14 @@ export class HarnessConversation implements HarnessConversationPort {
             this.observedAt = Date.now();
         });
     }
+    async delete() {
+        if (!this.snapshot().canDelete) throw new FSError('EACCES', 'Native deletion unavailable');
+        return this.mutate(async () => {
+            const result = await this.native('delete', options => this.client.delete!(this.profile.id, this.session!.id, options));
+            this.deletedSessionIds = result.deletedSessionIds; this.messages = []; this.requests = [];
+            this.draft = ''; this.draftAttachments = []; await this.save();
+        });
+    }
     async respond(id: string | number, response: Record<string, unknown>) {
         if (this.lifetime.signal.aborted || !this.writable || this.busy || this.pending || !this.session?.owned || !this.profile.capabilities.interactions || !this.requests.some(r => r.id === id))
             throw new FSError('EACCES', 'Interaction no longer pending or not owned');
@@ -228,13 +245,16 @@ export class HarnessConversation implements HarnessConversationPort {
         try { await action(); } finally { this.busy = false; }
         return this.snapshot();
     }
-    async reconcile() {
+    async reconcile(): Promise<HarnessConversationSnapshot> {
         if (!this.pending) return this.read();
         const receipt = await this.client.operation(this.profile.id, this.pending.requestId, {...this.options(), epoch: this.pending.epoch});
         if (receipt.outcome === 'unknown') return this.snapshot();
-        const result = receipt.result as {session?: HarnessSession; turnId?: string} | undefined;
+        const result = receipt.result as {session?: HarnessSession; turnId?: string; deletedSessionIds?: string[]} | undefined;
         if (receipt.outcome === 'committed') {
             if (['create', 'resume', 'rename', 'archive', 'unarchive'].includes(this.pending.operation)) this.session = validateSession(result?.session);
+            if (this.pending.operation === 'delete') {
+                this.deletedSessionIds = validateDeletedSessionIds(result?.deletedSessionIds, this.session!.id); this.messages = []; this.requests = []; this.draft = ''; this.draftAttachments = [];
+            }
             if (this.pending.operation === 'fork') this.navigationSessionId = validateSession(result?.session).id;
             if (this.pending.operation === 'turn') {
                 if (typeof result?.turnId !== 'string') throw new FSError('EIO', 'Invalid turn receipt');
@@ -256,6 +276,7 @@ export type HarnessConversationSnapshot = ReturnType<HarnessConversation['snapsh
 export interface HarnessConversationPort {
     readonly kind: string;
     snapshot(): HarnessConversationSnapshot;
+    delete?(): Promise<HarnessConversationSnapshot>;
     rename?(name: string): Promise<HarnessConversationSnapshot>;
     archive?(archived: boolean): Promise<HarnessConversationSnapshot>;
     fork(name?: string): Promise<HarnessConversationSnapshot>;

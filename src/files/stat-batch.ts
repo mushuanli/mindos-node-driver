@@ -37,6 +37,7 @@ export class StatBatch {
     }
     private async send(items: Pending[]): Promise<void> {
         const controller = new AbortController();
+        const paths = [...new Set(items.map(item => item.path))], positions = new Map(paths.map((path, index) => [path, index]));
         const changed = () => { if (items.every(item => !item.active)) controller.abort(); };
         for (const item of items) item.signal.addEventListener('abort', changed);
         try {
@@ -44,11 +45,12 @@ export class StatBatch {
             const budgets = items.filter(item => item.active).map(item => item.remaining() ?? this.http.defaultTimeoutMs);
             const options = { signal: controller.signal, timeoutMs: Math.max(...budgets) };
             const result = await this.http.json<{ results: Array<{ stat?: FileStat | null; error?: string }> }>(this.route,
-                { method: 'POST', body: JSON.stringify({ paths: items.map(item => item.path) }) }, options);
-            if (!result || !Array.isArray(result.results) || result.results.length !== items.length
+                { method: 'POST', body: JSON.stringify({ paths }) }, options);
+            if (!result || !Array.isArray(result.results) || result.results.length !== paths.length
                 || result.results.some(value => !value || typeof value !== 'object')) throw new FSError('EIO', 'Invalid stat batch response');
-            result.results.forEach((value, index) => {
-                const item = items[index]; if (!item.active) return;
+            items.forEach(item => {
+                if (!item.active) return;
+                const value = result.results[positions.get(item.path)!];
                 if (value.error) item.reject(new FSError((['EACCES', 'EINVAL', 'ENOTDIR', 'ECAPABILITY'].includes(value.error) ? value.error : 'EIO') as import('@itookit/vfs-core').FSErrorCode, 'Remote stat failed'));
                 else { validateStat(value.stat); item.resolve(value.stat ?? null); }
             });

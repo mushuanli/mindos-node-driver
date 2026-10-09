@@ -1,7 +1,7 @@
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessMutationOptions, HarnessEvents, HarnessHistory, HarnessPage, HarnessReceipt, HarnessSession, HarnessHistoryOptions, HarnessEventsOptions } from './contracts';
 import { HarnessRpc } from './rpc';
-import { validateEvents, validateHistory, validatePage, validateProfiles, validateReceipt, validateSession } from './validation';
+import { validateDeletedSessionIds, validateEvents, validateHistory, validatePage, validateProfiles, validateReceipt, validateSession } from './validation';
 
 /** Native task ownership lives on the gateway; this client never replays a mutation. */
 export class MCPHarnessClient implements HarnessClient {
@@ -55,6 +55,11 @@ export class MCPHarnessClient implements HarnessClient {
     }
     fork(profileId: string, sessionId: string, name?: string, options?: HarnessMutationOptions) {
         return this.session('harness_fork', {profileId, sessionId, ...(name ? {name} : {})}, options);
+    }
+    async delete(profileId: string, sessionId: string, options?: HarnessMutationOptions): Promise<{deletedSessionIds: string[]}> {
+        return await this.mutate('harness_delete', {profileId, sessionId}, options, value => {
+            return {deletedSessionIds: validateDeletedSessionIds((value as {deletedSessionIds?: unknown})?.deletedSessionIds, sessionId)};
+        }) as {deletedSessionIds: string[]};
     }
     rename(profileId: string, sessionId: string, name: string, options?: HarnessMutationOptions) {
         return this.session('harness_rename', {profileId, sessionId, name}, options);

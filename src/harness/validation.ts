@@ -43,7 +43,7 @@ export function validateProfiles(value: unknown): { epoch: string; profiles: Har
             || p.workspaces.some(w => typeof record(w).id !== 'string')
             || (caps.fork !== undefined && typeof caps.fork !== 'boolean')
             || (caps.search !== undefined && typeof caps.search !== 'boolean')
-            || ['rename', 'archive', 'unarchive'].some(key => caps[key] !== undefined && typeof caps[key] !== 'boolean')
+            || ['rename', 'archive', 'unarchive', 'delete'].some(key => caps[key] !== undefined && typeof caps[key] !== 'boolean')
             || caps.attachments !== undefined && (!Array.isArray(caps.attachments) || caps.attachments.length > 2 || caps.attachments.some(kind => !['text', 'image'].includes(String(kind))))
             || ['history','create','resume','interrupt','interactions'].some(key => typeof caps[key] !== 'boolean')) throw invalid();
     }
@@ -99,4 +99,11 @@ export function validateAttachments(value: unknown): HarnessAttachment[] {
     }
     if (total > 512 * 1024) throw fail();
     return structuredClone(value as HarnessAttachment[]);
+}
+
+export function validateDeletedSessionIds(value: unknown, sessionId: string): string[] {
+    if (!Array.isArray(value) || !value.includes(sessionId) || value.length > 16401
+        || value.some(id => typeof id !== 'string' || !id || id.length > 512) || new Set(value).size !== value.length)
+        throw new FSError('EIO', 'Invalid native deletion receipt');
+    return value;
 }

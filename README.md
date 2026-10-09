@@ -25,6 +25,8 @@ await adapter.dispose();
 
 `setCredential` 返回恢复先前凭据的函数；密码不进入持久连接记录。凭据解析器可以异步注入；工厂第二个参数为 harness 的 fetch 注入点。三个能力分别管理生命周期；`sync()` 返回句柄由消费者关闭，`dispose()` 释放文件 provider 和尚未关闭的 harness 客户端。关闭控制面板不会中断服务端 turn，中断必须显式调用 `interrupt()`。
 
+文件 stat 在同一微任务批次按路径去重，响应分发给各订阅者；重复的 VFS 祖先路径校验不会在同一 HTTP 批次重复提交。每个订阅者保留独立取消与期限，最后一个订阅者取消才中断共享请求。不跨批次缓存属性或不存在结果，外部文件更新仍在后续读取重新查询。
+
 修改请求携带服务 epoch 和唯一 requestId。断网、超时或失去响应均不自动重放，错误保留 requestId，可用 `operation()` 确认收据。收据和接管关系为服务进程内状态，重启后必须重新发现 profile，不能跨 epoch 重放。每个 profile 保留至多 1024 条收据，不淘汰仍可能被查询的记录；达到上限拒绝新的修改。
 
 当前支持 Codex 与 Claude Code 的会话分页、历史、新建、继续、消息、增量输出、中断、命令/文件审批和用户问题；Codex 另外声明分支、重命名和归档能力。其他 harness 通过服务端 HarnessPlugin/HarnessDriver 扩展，不改变宿主连接入口。配置和使用见 [pi-agent README](https://github.com/mushuanli/pi-agent#readme)。
@@ -102,3 +104,5 @@ Codex profile 声明 rename/archive/unarchive 与 attachments 能力。`harness.
 
 
 `HarnessClient.directoryVersion()` 是可选的项目目录观察端口，通过发现元数据 `fileWatch` 协商 `project_watch`。观察器复用 watchId、在 close 时释放，旧服务不发送新工具请求。服务器提供有界 inotify 覆盖，truncated 时每 30 秒补充目录刷新；版本不含路径或文件正文。`HarnessStatusObserver.fileVersion()` 与会话列表分离，没有会话也能观察文件。宿主按项目授权共享订阅，授权变动使旧版本失效。单个 Claude 子进程断线只影响对应 thread，不能使同 profile 的其他会话断线。
+
+原生 Codex 管理包含 rename/archive/unarchive/delete。永久删除沿用 epoch/requestId/receipt，客户端持久化删除标记；恢复时先核对删除回执，避免重放或读取已删除历史。notLoaded 的执行状态保持 unknown，归档原生历史不代表停止独立 CLI。

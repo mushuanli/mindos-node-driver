@@ -85,6 +85,7 @@ export class HarnessStatusObserver implements HarnessStatusPort {
         if (!repair) for (const {message} of page.events) {
             const id = message.params?.threadId;
             if (typeof id !== 'string' || !state.sessions.has(id)) continue;
+            if (message.method === 'thread/deleted') { state.sessions.delete(id); state.observations.delete(id); continue; }
             const prior = state.sessions.get(id)!, next = applyHarnessStatus(prior, message);
             if (next !== prior) { state.sessions.set(id, next); changed.add(id); }
         }
