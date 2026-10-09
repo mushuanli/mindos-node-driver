@@ -201,3 +201,78 @@ it('rejects cyclic history cursors without overwriting already loaded history', 
     expect(view.snapshot().messages.map(message => message.text)).toEqual(['Middle']);
     expect(view.snapshot().hasEarlier).toBe(true); await view.close();
 });
+
+it('renames and archives native metadata through receipts without resuming or sending', async () => {
+    const client = peer(), managed = {...profile, capabilities: {...profile.capabilities, rename: true, archive: true, unarchive: true}};
+    client.rename = vi.fn(async (_p, _s, name) => ({session: {...session, title: name}}));
+    client.archive = vi.fn(async (_p, _s, archived) => ({session: {...session, archived, owned: false}}));
+    const view = new HarnessConversation(client, managed, 'p', 's'); await view.read();
+    expect((await view.rename('Native name')).title).toBe('Native name');
+    expect((await view.archive(true))).toMatchObject({archived: true, canSend: false, canUnarchive: true});
+    expect((await view.archive(false))).toMatchObject({archived: false, canArchive: false});
+    expect(client.resume).not.toHaveBeenCalled(); expect(client.turn).not.toHaveBeenCalled(); await view.close();
+});
+it('persists unknown native management outcomes and prevents mutation replay after reopening', async () => {
+    const client = peer(), managed = {...profile, capabilities: {...profile.capabilities, rename: true}};
+    let record: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => record, save: async (next: HarnessRecovery) => {record = structuredClone(next);}};
+    client.rename = vi.fn(async () => {throw {outcome: 'unknown'};});
+    const first = new HarnessConversation(client, managed, 'p', 's', true, journal); await first.read();
+    await expect(first.rename('Saved elsewhere')).rejects.toMatchObject({outcome: 'unknown'}); await first.close();
+    const next = new HarnessConversation(client, managed, 'p', 's', true, journal); await next.read();
+    await expect(next.rename('Saved elsewhere')).rejects.toMatchObject({code: 'EACCES'});
+    expect(client.rename).toHaveBeenCalledOnce();
+    vi.mocked(client.operation).mockResolvedValue({requestId: record!.pending!.requestId, outcome: 'committed', result: {session: {...session, title: 'Saved elsewhere'}}});
+    vi.mocked(client.read).mockResolvedValue({session: {...session, title: 'Saved elsewhere'}, turns: []});
+    expect((await next.reconcile()).pending).toBe(false); await next.close();
+});
+it('denies metadata mutations on read-only, unsupported, busy and unowned archive targets', async () => {
+    const client = peer(), managed = {...profile, capabilities: {...profile.capabilities, rename: true, archive: true}};
+    client.rename = vi.fn(); client.archive = vi.fn();
+    const readonly = new HarnessConversation(client, managed, 'p', 's', false); await readonly.read();
+    await expect(readonly.rename('Denied')).rejects.toMatchObject({code: 'EACCES'});
+    await expect(readonly.archive(true)).rejects.toMatchObject({code: 'EACCES'});
+    vi.mocked(client.read).mockResolvedValue({session: {...session, status: 'notLoaded', owned: false}, turns: []});
+    const external = new HarnessConversation(client, managed, 'p', 's'); await external.read();
+    await expect(external.archive(true)).rejects.toMatchObject({code: 'EACCES'});
+    expect(client.archive).not.toHaveBeenCalled(); await readonly.close(); await external.close();
+});
+
+it('preserves attachment drafts through closure and unknown receipts without replaying a native turn', async () => {
+    const client = peer(); let record: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => record, save: async (value: HarnessRecovery) => {record = structuredClone(value);}};
+    const capable = {...profile, capabilities: {...profile.capabilities, attachments: ['text' as const]}};
+    const attachments = [{kind: 'text' as const, name: 'notes.md', content: 'quoted "text"\n中文'}];
+    const first = new HarnessConversation(client, capable, 'p', 's', true, journal);
+    await first.saveDraft('Review', attachments); await first.close();
+    const next = new HarnessConversation(client, capable, 'p', 's', true, journal);
+    expect((await next.read()).draftAttachments).toEqual(attachments);
+    vi.mocked(client.turn).mockRejectedValueOnce({outcome: 'unknown'});
+    await expect(next.send('Review', attachments)).rejects.toMatchObject({outcome: 'unknown'});
+    expect(record?.draftAttachments).toEqual(attachments);
+    await expect(next.send('Review', attachments)).rejects.toMatchObject({code: 'EBUSY'});
+    vi.mocked(client.operation).mockResolvedValue({outcome: 'committed', requestId: record!.pending!.requestId, result: {turnId: 't'}});
+    expect((await next.reconcile()).draftAttachments).toEqual([]); expect(record?.draft).toBe('');
+    expect(client.turn).toHaveBeenCalledOnce(); await next.close();
+});
+
+it('commits draft consumption atomically with the turn receipt and retains the receipt when saving fails', async () => {
+    const client = peer(); let record: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => record, save: async (value: HarnessRecovery) => {
+        if (record?.pending && !value.pending) throw new Error('draft acknowledgement failed');
+        record = structuredClone(value);
+    }};
+    const view = new HarnessConversation(client, profile, 'p', 's', true, journal); await view.read();
+    await expect(view.send('Task')).rejects.toThrow('draft acknowledgement failed');
+    expect(view.snapshot().pending).toBe(true); expect(record?.pending?.operation).toBe('turn');
+    await expect(view.send('Task')).rejects.toMatchObject({code: 'EBUSY'}); expect(client.turn).toHaveBeenCalledOnce();
+    await view.close();
+});
+
+it('rejects invalid attachment drafts before persisting receipts or starting a native turn', async () => {
+    const client = peer(), view = new HarnessConversation(client, {...profile, capabilities: {...profile.capabilities, attachments: ['text', 'image']}}, 'p', 's');
+    await view.read();
+    await expect(view.send('Review', [{kind: 'image', name: 'image.png', mimeType: 'image/png', content: 'http://localhost/private'}])).rejects.toMatchObject({code: 'EINVAL'});
+    await expect(view.saveDraft('Review', [{kind: 'text', name: 'notes', content: 'x'.repeat(65537)}])).rejects.toMatchObject({code: 'EINVAL'});
+    expect(client.turn).not.toHaveBeenCalled(); expect(view.snapshot().pending).toBe(false); await view.close();
+});

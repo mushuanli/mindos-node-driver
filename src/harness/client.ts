@@ -6,7 +6,32 @@ import { validateEvents, validateHistory, validatePage, validateProfiles, valida
 /** Native task ownership lives on the gateway; this client never replays a mutation. */
 export class MCPHarnessClient implements HarnessClient {
     private epoch?: string;
+    private watchId?: string;
+    private filesEnabled?: boolean;
     constructor(private readonly rpc: HarnessRpc, private readonly scope: {projectId: string; revision: number; readOnly?: boolean} | undefined = undefined) {}
+    async directoryVersion(options?: OperationOptions): Promise<string | undefined> {
+        if (!this.scope) return;
+        if (this.filesEnabled === undefined) {
+            const meta = await this.rpc.metadata?.(options);
+            const capability = (meta?.['itookit/pi-agent'] ?? meta?.['itookit/fs-agent']) as {fileWatch?: boolean} | undefined;
+            this.filesEnabled = capability?.fileWatch === true;
+        }
+        if (!this.filesEnabled) return;
+        const result = await this.rpc.call('project_watch', {...this.scope, ...(this.watchId ? {watchId: this.watchId} : {})}, options) as {watchId?: unknown; version?: unknown; gap?: unknown; truncated?: unknown};
+        if (typeof result?.watchId !== 'string' || !/^[a-f0-9]{32}$/.test(result.watchId) || typeof result.version !== 'string' || result.version.length > 128 || !result.version.startsWith(result.watchId + ':') || typeof result.gap !== 'boolean' || typeof result.truncated !== 'boolean') throw new FSError('EIO', 'Invalid directory watch response');
+        this.watchId = result.watchId;
+        return result.version + (result.truncated ? ':partial:' + Math.floor(Date.now() / 30_000) : '');
+    }
+    async search(profileId: string, query: {query: string; mode: 'title' | 'content'; archived?: boolean}, options?: OperationOptions) {
+        const result = await this.rpc.call('harness_session_search', {...this.scope, profileId, ...query}, options) as import('./contracts').HarnessSearchResult;
+        if (!result || !Array.isArray(result.matches) || result.matches.length > 100 || typeof result.truncated !== 'boolean' || result.nextCursor !== null)
+            throw new FSError('EIO', 'Invalid harness search response');
+        for (const row of result.matches) if (!row || typeof row.sessionId !== 'string' || !row.sessionId || typeof row.title !== 'string'
+            || typeof row.summary !== 'string' || row.summary.length > 2000 || !(row.updatedAt === null || typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt))
+            || row.itemId !== undefined && row.itemId !== null && typeof row.itemId !== 'string'
+            || row.turnId !== undefined && row.turnId !== null && typeof row.turnId !== 'string') throw new FSError('EIO', 'Invalid harness search match');
+        return {...result, matches: result.matches.map(row => ({...row, turnId: row.turnId ?? undefined, itemId: row.itemId ?? undefined}))};
+    }
     async profiles(options?: OperationOptions) {
         const value = validateProfiles(await this.rpc.call('harness_profiles', {}, options));
         this.epoch = value.epoch;
@@ -31,6 +56,12 @@ export class MCPHarnessClient implements HarnessClient {
     fork(profileId: string, sessionId: string, name?: string, options?: HarnessMutationOptions) {
         return this.session('harness_fork', {profileId, sessionId, ...(name ? {name} : {})}, options);
     }
+    rename(profileId: string, sessionId: string, name: string, options?: HarnessMutationOptions) {
+        return this.session('harness_rename', {profileId, sessionId, name}, options);
+    }
+    archive(profileId: string, sessionId: string, archived: boolean, options?: HarnessMutationOptions) {
+        return this.session(archived ? 'harness_archive' : 'harness_unarchive', {profileId, sessionId}, options);
+    }
     create(profileId: string, workspaceId: string, options?: OperationOptions) { return this.session('harness_create', { profileId, workspaceId }, options); }
     resume(profileId: string, sessionId: string, options?: OperationOptions) { return this.session('harness_resume', { ...this.scope, profileId, sessionId }, options); }
     private async session(name: string, args: object, options?: HarnessMutationOptions): Promise<{ session: HarnessSession }> {
@@ -39,8 +70,8 @@ export class MCPHarnessClient implements HarnessClient {
             return { session: validateSession(result?.session) };
         }) as { session: HarnessSession };
     }
-    async turn(profileId: string, sessionId: string, prompt: string, options?: OperationOptions) {
-        return await this.mutate('harness_turn', { profileId, sessionId, prompt }, options, value => {
+    async turn(profileId: string, sessionId: string, prompt: string, options?: import('./contracts').HarnessTurnOptions) {
+        return await this.mutate('harness_turn', { profileId, sessionId, prompt, ...(options?.attachments?.length ? {attachments: options.attachments} : {}) }, options, value => {
             const result = value as { turnId?: unknown };
             if (typeof result?.turnId !== 'string' || !result.turnId) throw new FSError('EIO', 'Invalid harness turn');
             return { turnId: result.turnId };
@@ -74,5 +105,9 @@ export class MCPHarnessClient implements HarnessClient {
             throw Object.assign(new FSError('EIO', 'Harness operation outcome unknown'), { requestId, outcome: 'unknown', cause: error });
         }
     }
-    close() { return this.rpc.close(); }
+    async close() {
+        try { if (this.watchId && this.scope) await this.rpc.call('project_unwatch', {...this.scope, watchId: this.watchId}, {timeoutMs: 2000}); }
+        catch { /* The server expires disconnected observers. */ }
+        finally { this.watchId = undefined; await this.rpc.close(); }
+    }
 }

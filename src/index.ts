@@ -14,3 +14,10 @@ export type { HarnessMessage, HarnessRequest } from './harness/conversation-mode
 export type { HarnessConversationJournal, HarnessRecovery } from './harness/conversation-journal';
 
 export type { HarnessConversationPort, HarnessConversationSnapshot } from './harness/conversation';
+export { harnessObservation } from './harness/state';
+export type { HarnessObservation, HarnessExecutionState } from './harness/state';
+export type { HarnessStatusPort, HarnessStatusRow } from './harness/status-observer';
+export type { FileSearchQuery, FileSearchResult, FileSearchMatch } from './search';
+export type { HarnessSearchMatch, HarnessSearchResult } from './harness/contracts';
+export { conversationBranches } from './harness/branches';
+export type { HarnessAttachment, HarnessTurnOptions } from './harness/contracts';

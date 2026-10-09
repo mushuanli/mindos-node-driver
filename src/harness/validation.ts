@@ -1,5 +1,5 @@
 import { FSError } from '@itookit/vfs-core';
-import type { HarnessEvents, HarnessHistory, HarnessPage, HarnessProfile, HarnessReceipt, HarnessSession } from './contracts';
+import type { HarnessAttachment, HarnessEvents, HarnessHistory, HarnessPage, HarnessProfile, HarnessReceipt, HarnessSession } from './contracts';
 
 function record(value: unknown): Record<string, unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
@@ -21,9 +21,17 @@ export function validateSession(value: unknown): HarnessSession {
         || !(v.branchName === undefined || v.branchName === null || typeof v.branchName === 'string')
         || (v.forkable !== undefined && typeof v.forkable !== 'boolean')
         || (v.owned !== undefined && typeof v.owned !== 'boolean')
+        || (v.archived !== undefined && typeof v.archived !== 'boolean')
         || !(v.activeTurnId === undefined || v.activeTurnId === null || typeof v.activeTurnId === 'string')) throw invalid();
+    if (v.statusDetails !== undefined && v.statusDetails !== null) {
+        const status = record(v.statusDetails);
+        if (typeof status.type !== 'string' || status.activeFlags !== undefined && (!Array.isArray(status.activeFlags)
+            || status.activeFlags.some(flag => typeof flag !== 'string'))) throw invalid();
+    }
+    if (v.lastTurnResult !== undefined && v.lastTurnResult !== null && !['completed', 'failed', 'cancelled'].includes(String(v.lastTurnResult))) throw invalid();
     const native = v.native && typeof v.native === 'object' ? v.native as Record<string, unknown> : {};
     return {...v, title: [v.title, native.name, native.preview].find(text => typeof text === 'string' && text.trim())?.toString().trim() ?? '',
+        lastTurnResult: v.lastTurnResult ?? undefined,
         createdAt: sessionTime(v.createdAt ?? native.createdAt), updatedAt: sessionTime(v.updatedAt ?? native.updatedAt)} as unknown as HarnessSession;
 }
 export function validateProfiles(value: unknown): { epoch: string; profiles: HarnessProfile[] } {
@@ -34,6 +42,9 @@ export function validateProfiles(value: unknown): { epoch: string; profiles: Har
         if (typeof p.id !== 'string' || !p.id || typeof p.kind !== 'string' || !p.kind || !Array.isArray(p.workspaces)
             || p.workspaces.some(w => typeof record(w).id !== 'string')
             || (caps.fork !== undefined && typeof caps.fork !== 'boolean')
+            || (caps.search !== undefined && typeof caps.search !== 'boolean')
+            || ['rename', 'archive', 'unarchive'].some(key => caps[key] !== undefined && typeof caps[key] !== 'boolean')
+            || caps.attachments !== undefined && (!Array.isArray(caps.attachments) || caps.attachments.length > 2 || caps.attachments.some(kind => !['text', 'image'].includes(String(kind))))
             || ['history','create','resume','interrupt','interactions'].some(key => typeof caps[key] !== 'boolean')) throw invalid();
     }
     return v as unknown as { epoch: string; profiles: HarnessProfile[] };
@@ -67,4 +78,25 @@ export function validateReceipt(value: unknown): HarnessReceipt {
     const v = record(value);
     if (typeof v.requestId !== 'string' || !['committed','not-committed','unknown'].includes(String(v.outcome))) throw invalid();
     return v as unknown as HarnessReceipt;
+}
+
+/** Validate locally owned drafts before writing or starting a native operation. */
+export function validateAttachments(value: unknown): HarnessAttachment[] {
+    if (value === undefined) return [];
+    const fail = () => new FSError('EINVAL', 'Invalid native attachment draft');
+    if (!Array.isArray(value) || value.length > 5) throw fail();
+    let total = 0;
+    for (const file of value) {
+        if (!file || !['text', 'image'].includes(file.kind) || typeof file.content !== 'string' || typeof file.name !== 'string'
+            || !file.name || /[\x00-\x1f\x7f/\\]/.test(file.name) || new TextEncoder().encode(file.name).byteLength > 256) throw fail();
+        const size = new TextEncoder().encode(file.content).byteLength; total += size;
+        if (file.kind === 'text' && (size > 64 * 1024 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(file.content))) throw fail();
+        if (file.kind === 'image') {
+            if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimeType) || !file.content.startsWith(`data:${file.mimeType};base64,`)) throw fail();
+            const encoded = file.content.split(',')[1] ?? '';
+            if (!encoded || encoded.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length / 4 * 3 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0) > 256 * 1024) throw fail();
+        }
+    }
+    if (total > 512 * 1024) throw fail();
+    return structuredClone(value as HarnessAttachment[]);
 }

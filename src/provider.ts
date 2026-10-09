@@ -9,10 +9,12 @@ import { createProjectProcess } from './project-process';
 import type { HarnessClient, HarnessProfile } from './harness/contracts';
 import type { HarnessConversationJournal } from './harness/conversation-journal';
 import { HarnessConversation, type HarnessConversationPort } from './harness/conversation';
+import { HarnessStatusObserver, type HarnessStatusPort } from './harness/status-observer';
 
 type Connection = Omit<RemoteConnection, 'alias'>;
-export interface PiAgentDescriptor { version: 1; httpEndpoint: string; serverId: string | null; fileProtocol: 'fs-agent-http-v1'; harness: boolean; projects?: boolean; sync?: boolean; projectProtocol?: string; directorySync?: boolean; directorySyncVersion?: number; }
+export interface PiAgentDescriptor { version: 1; httpEndpoint: string; serverId: string | null; fileProtocol: 'fs-agent-http-v1'; harness: boolean; projects?: boolean; sync?: boolean; projectProtocol?: string; directorySync?: boolean; directorySyncVersion?: number; fileSearch?: boolean; fileWatch?: boolean; }
 export interface PiAgentDriver extends HttpSourceProvider {
+    observeHarness(client: HarnessClient, writable?: boolean): HarnessStatusPort;
     open(connection: RemoteConnection & {serverProjectId?: string; serverProjectRevision?: number; access?: 'ro' | 'rw'}, options?: import('@itookit/vfs-core').OperationOptions): ReturnType<HttpSourceProvider['open']>;
     resolveCredential(reference: string): Promise<string>;
     discover(connection: Connection, options?: import('@itookit/vfs-core').OperationOptions): Promise<PiAgentDescriptor>;
@@ -38,6 +40,7 @@ export function createPiAgentDriver(resolveCredential?: (reference: string) => s
     const projectFiles = new Set<FileSystemSourceOwner>();
     return Object.assign(files, {
         resolveCredential: credential,
+        observeHarness: (client: HarnessClient, writable = true) => new HarnessStatusObserver(client, Date.now, writable),
         conversation: (client: HarnessClient, profile: HarnessProfile, workspaceId: string, sessionId?: string, writable?: boolean, journal?: HarnessConversationJournal) => new HarnessConversation(client, profile, workspaceId, sessionId, writable, journal),
         async discover(connection: Connection, options?: import('@itookit/vfs-core').OperationOptions): Promise<PiAgentDescriptor> {
             const rpc = createHarnessRpc(connection.endpoint, authenticatedFetch(connection, credential, fetch), true);

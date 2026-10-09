@@ -4,7 +4,7 @@ PI 表示 Personal Information（个人信息）。
 
 连接 [pi-agent](https://github.com/mushuanli/pi-agent) 的平台无关客户端。pi-agent 是 MindOS 的个人智能节点，将设备上的文件、项目和执行环境接入 MindOS；本包统一封装文件访问、项目管理、同步、进程与原生 AI harness 会话。源码仓库：[piagent-driver](https://github.com/mushuanli/piagent-driver)。
 
-Web、Tauri、CLI 创建 `createPiAgentDriver()`，共用连接和运行期凭据。原 vfsdriver-agent 的文件与进程实现已并入 `src/files`，保留 revision、条件写入、流传输与隔离语义，发布包不再依赖旧驱动。HTTP 同步客户端通过 `/sync` 导出；harness 通过 `/harness` 导出并使用 MCP SDK 2.0.0、协议 2026-07-28。Codex app-server 的原生 stdio 协议留在服务端。
+Web、Tauri、CLI 创建 `createPiAgentDriver()`，共用连接和运行期凭据。原 vfsdriver-agent 的文件与进程实现已并入 `src/files`，保留 revision、条件写入、流传输与隔离语义，发布包不再依赖旧驱动。HTTP 同步客户端通过 `/sync` 导出；harness 通过 `/harness` 导出并使用 MCP SDK 2.0.0、协议 2026-07-28。Codex app-server 和 Claude Code SDK 的原生协议留在服务端。
 
 ```sh
 pnpm add @itookit/piagent-driver
@@ -27,7 +27,7 @@ await adapter.dispose();
 
 修改请求携带服务 epoch 和唯一 requestId。断网、超时或失去响应均不自动重放，错误保留 requestId，可用 `operation()` 确认收据。收据和接管关系为服务进程内状态，重启后必须重新发现 profile，不能跨 epoch 重放。每个 profile 保留至多 1024 条收据，不淘汰仍可能被查询的记录；达到上限拒绝新的修改。
 
-当前支持 Codex 的会话分页、归档列表、历史、新建、继续、消息、增量输出、中断、命令/文件审批和用户问题。其他 harness 通过服务端 HarnessPlugin/HarnessDriver 扩展，不改变宿主连接入口。配置和使用见 [pi-agent README](https://github.com/mushuanli/pi-agent#readme)。
+当前支持 Codex 与 Claude Code 的会话分页、历史、新建、继续、消息、增量输出、中断、命令/文件审批和用户问题；Codex 另外声明分支、重命名和归档能力。其他 harness 通过服务端 HarnessPlugin/HarnessDriver 扩展，不改变宿主连接入口。配置和使用见 [pi-agent README](https://github.com/mushuanli/pi-agent#readme)。
 
 验证：`pnpm --filter @itookit/piagent-driver test`、`typecheck`；`PI_AGENT_HARNESS_TEST=1 pnpm --filter @itookit/piagent-driver test tests/network.test.ts` 启动本地 Rust 服务和模拟 Codex，验证真实 MCP 网络链路，不调用模型。
 
@@ -85,3 +85,20 @@ PI_AGENT_MANIFEST=/path/to/pi-agent/Cargo.toml PI_AGENT_HARNESS_TEST=1 pnpm exec
 ```
 
 itookit 内自动发现 `tools/pi-agent`。文件进程隔离测试还需 `PI_AGENT_PROCESS_TEST=1`；harness 网络测试使用模拟 Codex，不调用模型。旧协议标识和历史数据保持兼容，旧包的已发布版本不会被覆盖。
+
+
+## 只读状态与搜索
+
+`adapter.observeHarness(projects.harness(project, {readOnly: true}), false)` 创建共享 `HarnessStatusObserver`，poll 返回 profile/session 的 `HarnessObservation`；仅使用有界列表和事件，不读取每行历史、不 resume。execution、最近结果、连接、时效和控制能力分别返回。`close()` 释放底层客户端，关闭界面不停止原生 turn。
+
+服务描述 `fileSearch` 为 true 时可调用 `projects.search(project, {query, mode: 'path' | 'content'})`。profile.capabilities.search 为 true 时可调用 `harness.search(profileId, {query, mode: 'title' | 'content', archived})`。两者返回 matches/truncated/nextCursor；当前 nextCursor=null，超限明确部分结果。原生命中保留 sessionId/turnId/itemId；文件命中使用相对路径和行号。查询只读、默认字面匹配，调用方继续核验授权身份、取消及结果时效。
+
+
+### 原生管理与附件
+
+Codex profile 声明 rename/archive/unarchive 与 attachments 能力。`harness.rename` 修改原生标题，`harness.archive(profile, session, true|false)` 归档或恢复；均使用修改回执，未知结果不自动重发。归档要求本服务持有且明确 idle，恢复不会获取控制权。`HarnessConversation` 输出管理可用性、归档标记及标题通知。
+
+`turn` options 可传 `attachments`（kind/name/content/mimeType）：文本为 UTF-8 内容，图片为 PNG/JPEG/WebP data URL。最多 5 个，文本每个 64 KiB、图片解码每个 256 KiB、编码内容合计 512 KiB；不传宿主路径或 HTTP URL。会话 journal 保存未发送附件草稿，确认 turn 回执后清空，未知结果保留但禁止重发。`HarnessStatusRow.fileVersion` 只在文件变更完成、turn 完成及重连快照修复时推进，供宿主合并目录刷新。
+
+
+`HarnessClient.directoryVersion()` 是可选的项目目录观察端口，通过发现元数据 `fileWatch` 协商 `project_watch`。观察器复用 watchId、在 close 时释放，旧服务不发送新工具请求。服务器提供有界 inotify 覆盖，truncated 时每 30 秒补充目录刷新；版本不含路径或文件正文。`HarnessStatusObserver.fileVersion()` 与会话列表分离，没有会话也能观察文件。宿主按项目授权共享订阅，授权变动使旧版本失效。单个 Claude 子进程断线只影响对应 thread，不能使同 profile 的其他会话断线。

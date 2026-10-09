@@ -1,5 +1,7 @@
+import type { HarnessAttachment } from './contracts';
 export interface HarnessRecovery {
     draft?: string;
+    draftAttachments?: HarnessAttachment[];
     sessionId?: string;
     pending?: {requestId: string; epoch: string; operation: string};
 }

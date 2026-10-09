@@ -3,6 +3,7 @@ import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import { MCPHarnessClient } from './harness/client';
 import { HarnessRpc } from './harness/rpc';
 import type { HarnessClient } from './harness/contracts';
+import { validateFileSearch, type FileSearchQuery, type FileSearchResult } from './search';
 
 export interface ProjectMount { alias: string; path: string; at: string; access: 'ro' | 'rw' }
 export interface RemoteProject {
@@ -11,6 +12,7 @@ export interface RemoteProject {
 export interface RegisterProject { name: string; alias: string; path: string; access: 'ro' | 'rw'; mounts?: ProjectMount[]; createDirectory?: boolean }
 export interface ProjectProcess { state: string; stdout: string; stderr: string; code: number | null; error: string | null; truncated: boolean }
 export interface ProjectClient {
+    search?(project: RemoteProject, query: FileSearchQuery, options?: OperationOptions): Promise<FileSearchResult>;
     roots(options?: OperationOptions): Promise<{ roots: Array<{alias: string; access: 'ro' | 'rw'}>; execution: boolean; backend: string }>;
     list(options?: OperationOptions): Promise<RemoteProject[]>;
     read(id: string, options?: OperationOptions): Promise<RemoteProject>;
@@ -24,6 +26,9 @@ export interface ProjectClient {
 }
 export class MCPProjectClient implements ProjectClient {
     constructor(private readonly rpc: HarnessRpc) {}
+    async search(project: RemoteProject, query: FileSearchQuery, options?: OperationOptions) {
+        return validateFileSearch(await this.rpc.call('project_search', {projectId: project.id, revision: project.revision, ...query}, options));
+    }
     async roots(options?: OperationOptions) {
         const value = await this.rpc.call('project_roots', {}, options) as Awaited<ReturnType<ProjectClient['roots']>>;
         if (!value || !Array.isArray(value.roots) || typeof value.execution !== 'boolean' || typeof value.backend !== 'string'

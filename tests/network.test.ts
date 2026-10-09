@@ -53,6 +53,9 @@ it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio har
         const readonly=await adapter.open({endpoint,alias:'home',credentialRef:'ref',serverProjectId:project.id,serverProjectRevision:project.revision,access:'ro'});
         try {await expect(readonly.fs.driver.writeContent('/nested/note.txt','forbidden')).rejects.toMatchObject({code:'EROFS'});}finally{await readonly.dispose();}
         const scope=projects.harness(project);
+        const version = await scope.directoryVersion!(); expect(version).toBeTypeOf('string');
+        await writeFile(join(exports, project.path, 'external-native.md'), 'independent CLI write');
+        expect(await scope.directoryVersion!()).not.toBe(version);
         expect((await scope.profiles()).profiles[0].workspaces).toEqual([{id:project.id}]);
         await expect(scope.create('codex',project.id)).rejects.toMatchObject({outcome:'not-committed',code:'ECAPABILITY'});
         await scope.close(); await projects.close();
@@ -62,10 +65,12 @@ it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio har
         expect(session.createdAt).toBe(1791458500000);
         expect(session.updatedAt).toBe(1791458565000);
         expect((await client.list('codex')).sessions).toHaveLength(1);
+        expect((await client.search('codex', {query: 'history', mode: 'title'})).matches).toMatchObject([{sessionId: session.id, title: '<script>history</script>'}]);
+        expect((await client.search('codex', {query: 'absent', mode: 'content'})).matches).toEqual([]);
         expect((await client.read('codex',session.id)).turns).toEqual([]);
         expect((await client.read('codex',session.id,{toolDetail:'summary'})).turns).toEqual([]);
         await client.resume('codex',session.id);
-        const { turnId } = await client.turn('codex',session.id,'test');
+        const { turnId } = await client.turn('codex',session.id,'test', {attachments: Array.from({length: 5}, (_, index) => ({kind: 'text' as const, name: `large-${index}.txt`, content: '\n'.repeat(64 * 1024)}))});
         let page = await client.events('codex',undefined,{toolDetail:'summary'});
         for (let i=0;i<10 && !page.requests.length;i++) { await new Promise(resolve => setTimeout(resolve,20)); page = await client.events('codex',undefined,{toolDetail:'summary'}); }
         expect(page.events.some(e => e.message.method === 'item/agentMessage/delta')).toBe(true);

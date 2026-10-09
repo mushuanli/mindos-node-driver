@@ -93,3 +93,16 @@ it('rejects a recovery receipt belonging to another request',async () => {
     const client=new MCPHarnessClient({call:vi.fn(async name=>name==='harness_profiles'?{epoch:'e',profiles:[]}:{outcome:'committed',requestId:'other',result:{session}}),close:vi.fn()});
     await expect(client.operation('codex','requested')).rejects.toMatchObject({code:'EIO'});
 });
+
+it('observes project directories only when discovered, validates responses and releases its token', async () => {
+    const token = 'a'.repeat(32), call = vi.fn(async (name: string) => name === 'project_watch' ? {watchId: token, version: token + ':1', gap: false, truncated: false} : {released: true});
+    const close = vi.fn(), metadata = vi.fn(async () => ({'itookit/pi-agent': {fileWatch: true}}));
+    const client = new MCPHarnessClient({call, close, metadata}, {projectId: 'p', revision: 2, readOnly: true});
+    expect(await client.directoryVersion()).toBe(token + ':1');
+    await client.directoryVersion(); expect(call).toHaveBeenLastCalledWith('project_watch', {projectId: 'p', revision: 2, readOnly: true, watchId: token}, undefined);
+    call.mockResolvedValueOnce({watchId: token, version: 'foreign:1', gap: false, truncated: false});
+    await expect(client.directoryVersion()).rejects.toMatchObject({code: 'EIO'});
+    await client.close(); expect(call).toHaveBeenLastCalledWith('project_unwatch', expect.objectContaining({watchId: token}), {timeoutMs: 2000}); expect(close).toHaveBeenCalledOnce();
+    const old = new MCPHarnessClient({call, close}, {projectId: 'p', revision: 2});
+    expect(await old.directoryVersion()).toBeUndefined(); expect(call).toHaveBeenCalledTimes(4);
+});
