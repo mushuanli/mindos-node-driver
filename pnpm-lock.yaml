@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@itookit/vfs-core':
-        specifier: 5.3.1
-        version: 5.3.1
+        specifier: 5.3.2
+        version: 5.3.2
       '@itookit/vfs-sync':
         specifier: 0.1.0
         version: 0.1.0
@@ -345,8 +345,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@itookit/vfs-core@5.3.1':
-    resolution: {integrity: sha512-ojQWg4TArlWtLKqPlUza15pYSvdAk7rJLLvR1TpQ44seXdDjd/xH1PX2BHkjKqV+O7c4MejXFQyMXMR/E8Idng==}
+  '@itookit/vfs-core@5.3.2':
+    resolution: {integrity: sha512-TR3VCHuYfgEQiixYDb5MhuFDYnIH2cBeYUEe7ZJtUhtzwXfwzgVMOvVN4hS3YMAwggqZ7A46gLkEvDD69Mlu0Q==}
 
   '@itookit/vfs-sync@0.1.0':
     resolution: {integrity: sha512-nWpnOPouSnhMs60BVy+mB70GGxEld5jgRGuxZQ5Jxj1kkQdrZsNd/+/s+kzSD8BCJLaxzp5J/LpNd5OwSJFZCQ==}
@@ -1115,7 +1115,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@itookit/vfs-core@5.3.1':
+  '@itookit/vfs-core@5.3.2':
     dependencies:
       ignore: 5.3.2
       yaml: 2.9.1
