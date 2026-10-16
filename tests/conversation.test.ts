@@ -318,3 +318,20 @@ it('archives unloaded native history without acquiring ownership or claiming ext
     expect(await view.archive(true)).toMatchObject({archived: true, canSend: false});
     expect(client.resume).not.toHaveBeenCalled(); expect(client.turn).not.toHaveBeenCalled(); await view.close();
 });
+
+
+it('exposes the committed turn identity even before its native history echo is available', async () => {
+    const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    const accepted = await view.send('pending echo');
+    expect(accepted.submittedTurnId).toBe('t'); expect(client.turn).toHaveBeenCalledOnce();
+    expect((await view.read()).submittedTurnId).toBe('t'); await view.close();
+});
+
+it('retains input and never starts a turn when another native writer prevents resuming', async () => {
+    const client = peer(); vi.mocked(client.read).mockResolvedValue({session: {...session, owned: false}, turns: []});
+    const view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    vi.mocked(client.resume).mockRejectedValue(Object.assign(new Error('HARNESS_SESSION_BUSY'), {outcome: 'not-committed'}));
+    await expect(view.send('keep input')).rejects.toThrow('HARNESS_SESSION_BUSY');
+    expect(view.snapshot()).toMatchObject({pending: false, draft: 'keep input', submittedTurnId: undefined});
+    expect(client.turn).not.toHaveBeenCalled(); await view.close();
+});

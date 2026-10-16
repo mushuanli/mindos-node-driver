@@ -65,7 +65,7 @@ plan; never replace an `applying` plan. Deletes and project mounts are excluded.
 
 `HarnessSession.createdAt` 与 `updatedAt` 分别表示创建及最后修改的 Unix 毫秒时间，缺失为 null；createdAt 为可选字段以兼容旧服务。驱动统一转换旧服务的秒时间，从 native.createdAt 恢复缺失的创建时间，不用修改时间冒充创建时间。空标题可回退 native.name/preview，展示层使用未命名会话兜底，原生 ID 继续用于路由与操作。
 
-会话消息保留原生 `turnId` 和毫秒 `timestamp`，内容数组中的所有请求、回复均按顺序展开；用户文字项还通过 contentParts 保留边界，展示层在项间插入 Markdown 分隔线，plain-text 预览保持原格式；`branchName` 独立于会话标题，根分支使用 main。`HarnessConversation` 为历史和事件请求 `toolDetail: 'summary'`，工具仅保留名称、操作、首个非空命令行（最多 240 个字符）和目标路径，忽略工具输出增量；旧服务的详细工具数据也在驱动内转换为摘要。`loadEarlier` 合并稳定 ID 并拒绝循环游标，刷新和事件恢复保留已加载的早期页面。itookit 打开后自动逐页补齐到开头，保留加载进度及失败重试入口。总容量为 10,000 条/32 MiB，超过时明确失败并保留现有内容与游标，不静默裁剪。宿主按轮次把请求与该轮全部响应分别投影为一个 Markdown 编辑器。驱动不生成产品界面或改写原生历史。
+会话消息保留原生 `turnId` 和毫秒 `timestamp`，内容数组中的所有请求、回复均按顺序展开；用户文字项还通过 contentParts 保留边界，展示层在项间插入 Markdown 分隔线，plain-text 预览保持原格式；`branchName` 独立于会话标题，根分支使用 main。`HarnessConversation` 为历史和事件请求 `toolDetail: 'summary'`，工具仅保留名称、操作、首个非空命令行（最多 240 个字符）和目标路径，忽略工具输出增量；旧服务的详细工具数据也在驱动内转换为摘要。`loadEarlier` 合并稳定 ID 并拒绝循环游标，刷新和事件恢复保留已加载的早期页面。itookit 在历史顶部提供按需分页入口，点击才读取更早记录，保留加载进度及失败重试入口。总容量为 10,000 条/32 MiB，超过时明确失败并保留现有内容与游标，不静默裁剪。宿主按轮次把请求与该轮全部响应分别投影为一个 Markdown 编辑器。驱动不生成产品界面或改写原生历史。
 
 ## 独立开发与发布
 
@@ -108,3 +108,5 @@ Codex profile 声明 rename/archive/unarchive 与 attachments 能力。`harness.
 `HarnessClient.directoryVersion()` 是可选的项目目录观察端口，通过发现元数据 `fileWatch` 协商 `project_watch`。观察器复用 watchId、在 close 时释放，旧服务不发送新工具请求。服务器提供有界 inotify 覆盖，truncated 时每 30 秒补充目录刷新；版本不含路径或文件正文。`HarnessStatusObserver.fileVersion()` 与会话列表分离，没有会话也能观察文件。宿主按项目授权共享订阅，授权变动使旧版本失效。单个 Claude 子进程断线只影响对应 thread，不能使同 profile 的其他会话断线。
 
 原生 Codex 管理包含 rename/archive/unarchive/delete。永久删除沿用 epoch/requestId/receipt，客户端持久化删除标记；恢复时先核对删除回执，避免重放或读取已删除历史。notLoaded 的执行状态保持 unknown，归档原生历史不代表停止独立 CLI。
+
+`HarnessConversation.snapshot().submittedTurnId` 保留本视图最近一次已确认发送的原生轮次身份，历史尚未回显时也可供界面替换临时卡片；开始新发送时重置。只有 turn 成功或对应 committed 回执才设置，resume/create 成功不算消息已提交。原生 `HARNESS_SESSION_BUSY` 拒绝恢复时保留草稿，不调用 turn。

@@ -22,6 +22,7 @@ export class HarnessConversation implements HarnessConversationPort {
     private readonly historyCursors = new Set<string>();
     private navigationSessionId?: string;
     private draft = '';
+    private submittedTurnId?: string;
     private draftAttachments: HarnessAttachment[] = [];
     private writes: Promise<void> = Promise.resolve();
     private disconnected = false;
@@ -47,7 +48,7 @@ export class HarnessConversation implements HarnessConversationPort {
         const manageable = !this.deletedSessionIds.length && this.loaded && !!this.session && !this.lifetime.signal.aborted && !this.disconnected && !observation.stale && this.writable && !this.busy && !this.pending;
         observation.canInterrupt = controllable && !!this.session?.activeTurnId && this.profile.capabilities.interrupt;
         observation.canRespond = controllable && !!this.requests.length && this.profile.capabilities.interactions;
-        return {observation, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
+        return {observation, submittedTurnId: this.submittedTurnId, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
             attachments: this.writable ? this.profile.capabilities.attachments : undefined,
             deletedSessionIds: this.deletedSessionIds.slice(),
             canDelete: manageable && !!this.client.delete && !!this.profile.capabilities.delete
@@ -196,11 +197,13 @@ export class HarnessConversation implements HarnessConversationPort {
         if (!text.trim() || !this.snapshot().canSend) throw new FSError('EBUSY', 'Conversation cannot send');
         if (attachments?.some(file => !this.profile.capabilities.attachments?.includes(file.kind))) throw new FSError('ECAPABILITY', 'Attachment kind unavailable');
         const prepared = validateAttachments(attachments);
+        this.submittedTurnId = undefined;
         this.draftAttachments = prepared; this.draft = text;
         return this.mutate(async () => {
             if (!this.session) this.session = (await this.native('create', options => this.client.create(this.profile.id, this.workspaceId, options))).session;
             if (!this.session.owned) this.session = (await this.native('resume', options => this.client.resume(this.profile.id, this.session!.id, options))).session;
             const {turnId} = await this.native('turn', options => this.client.turn(this.profile.id, this.session!.id, text, {...options, ...(prepared.length ? {attachments: prepared} : {})}));
+            this.submittedTurnId = turnId;
             if (!this.completed.has(turnId)) { this.session.activeTurnId = turnId; this.session.status = 'active'; }
             this.replace({id: `submitted:${turnId}`, role: 'user', text, turnId, timestamp: Date.now()});
         }).then(async snapshot => {
@@ -258,6 +261,7 @@ export class HarnessConversation implements HarnessConversationPort {
             if (this.pending.operation === 'fork') this.navigationSessionId = validateSession(result?.session).id;
             if (this.pending.operation === 'turn') {
                 if (typeof result?.turnId !== 'string') throw new FSError('EIO', 'Invalid turn receipt');
+                this.submittedTurnId = result.turnId;
                 this.draft = ''; this.draftAttachments = [];
             }
         }
