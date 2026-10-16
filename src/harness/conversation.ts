@@ -48,7 +48,7 @@ export class HarnessConversation implements HarnessConversationPort {
         const manageable = !this.deletedSessionIds.length && this.loaded && !!this.session && !this.lifetime.signal.aborted && !this.disconnected && !observation.stale && this.writable && !this.busy && !this.pending;
         observation.canInterrupt = controllable && !!this.session?.activeTurnId && this.profile.capabilities.interrupt;
         observation.canRespond = controllable && !!this.requests.length && this.profile.capabilities.interactions;
-        return {observation, submittedTurnId: this.submittedTurnId, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
+        return {usage: this.session?.usage, usageUnavailable: this.session?.usageUnavailable, observation, submittedTurnId: this.submittedTurnId, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
             attachments: this.writable ? this.profile.capabilities.attachments : undefined,
             deletedSessionIds: this.deletedSessionIds.slice(),
             canDelete: manageable && !!this.client.delete && !!this.profile.capabilities.delete

@@ -21,3 +21,5 @@ export type { FileSearchQuery, FileSearchResult, FileSearchMatch } from './searc
 export type { HarnessSearchMatch, HarnessSearchResult } from './harness/contracts';
 export { conversationBranches } from './harness/branches';
 export type { HarnessAttachment, HarnessTurnOptions } from './harness/contracts';
+
+export type { HarnessUsage, HarnessUsageEntry, HarnessTokens } from './harness/usage';

@@ -9,3 +9,5 @@ export { HarnessStatusObserver } from './status-observer';
 export type { HarnessStatusPort, HarnessStatusRow } from './status-observer';
 export type { HarnessSearchMatch, HarnessSearchResult } from './contracts';
 export type { HarnessAttachment, HarnessTurnOptions } from './contracts';
+
+export type { HarnessUsage, HarnessUsageEntry, HarnessTokens } from './usage';

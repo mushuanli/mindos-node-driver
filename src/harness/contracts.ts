@@ -1,10 +1,12 @@
 import type { OperationOptions } from '@itookit/vfs-core';
+import type { HarnessUsage } from './usage';
 
 export interface HarnessProfile {
     id: string; kind: string; projectRuntime?: boolean; workspaces: Array<{ id: string }>;
-    capabilities: { history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; delete?: boolean; attachments?: Array<'text' | 'image'> };
+    capabilities: { usage?: boolean; history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; delete?: boolean; attachments?: Array<'text' | 'image'> };
 }
 export interface HarnessSession {
+    usage?: HarnessUsage; usageUnavailable?: boolean;
     id: string; title: string; cwd: string | null; status: string | null; updatedAt: number | null; resumable: boolean;
     createdAt?: number | null;
     owned?: boolean;
@@ -29,6 +31,7 @@ export interface HarnessMutationOptions extends OperationOptions { requestId?: s
 export interface HarnessAttachment {kind: 'text' | 'image'; name: string; content: string; mimeType?: string}
 export interface HarnessTurnOptions extends HarnessMutationOptions {attachments?: HarnessAttachment[]}
 export interface HarnessClient {
+    usage?(profileId: string, sessionId: string, options?: OperationOptions): Promise<HarnessUsage>;
     directoryVersion?(options?: import('@itookit/vfs-core').OperationOptions): Promise<string | undefined>;
     delete?(profileId: string, sessionId: string, options?: HarnessMutationOptions): Promise<{deletedSessionIds: string[]}>;
     rename?(profileId: string, sessionId: string, name: string, options?: HarnessMutationOptions): Promise<{session: HarnessSession}>;

@@ -1,6 +1,7 @@
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessMutationOptions, HarnessEvents, HarnessHistory, HarnessPage, HarnessReceipt, HarnessSession, HarnessHistoryOptions, HarnessEventsOptions } from './contracts';
 import { HarnessRpc } from './rpc';
+import { validateUsage } from './usage';
 import { validateDeletedSessionIds, validateEvents, validateHistory, validatePage, validateProfiles, validateReceipt, validateSession } from './validation';
 
 /** Native task ownership lives on the gateway; this client never replays a mutation. */
@@ -40,6 +41,9 @@ export class MCPHarnessClient implements HarnessClient {
     }
     async list(profileId: string, query = {}, options?: OperationOptions): Promise<HarnessPage> {
         return validatePage(await this.rpc.call('harness_sessions', { ...this.scope, profileId, ...query }, options));
+    }
+    async usage(profileId: string, sessionId: string, options?: OperationOptions) {
+        return validateUsage(await this.rpc.call('harness_session_usage', {...this.scope, profileId, sessionId}, options), sessionId);
     }
     async read(profileId: string, sessionId: string, options?: HarnessHistoryOptions): Promise<HarnessHistory> {
         return validateHistory(await this.rpc.call('harness_session_read', { ...this.scope, profileId, sessionId, ...(options?.cursor ? {cursor:options.cursor} : {}), ...(options?.toolDetail ? {toolDetail: options.toolDetail} : {}) }, options));

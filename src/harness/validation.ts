@@ -1,4 +1,5 @@
 import { FSError } from '@itookit/vfs-core';
+import { validateUsage } from './usage';
 import type { HarnessAttachment, HarnessEvents, HarnessHistory, HarnessPage, HarnessProfile, HarnessReceipt, HarnessSession } from './contracts';
 
 function record(value: unknown): Record<string, unknown> {
@@ -29,8 +30,10 @@ export function validateSession(value: unknown): HarnessSession {
             || status.activeFlags.some(flag => typeof flag !== 'string'))) throw invalid();
     }
     if (v.lastTurnResult !== undefined && v.lastTurnResult !== null && !['completed', 'failed', 'cancelled'].includes(String(v.lastTurnResult))) throw invalid();
+    const usage = v.usage === undefined ? undefined : validateUsage(v.usage, v.id as string);
+    if (v.usageUnavailable !== undefined && typeof v.usageUnavailable !== 'boolean') throw invalid();
     const native = v.native && typeof v.native === 'object' ? v.native as Record<string, unknown> : {};
-    return {...v, title: [v.title, native.name, native.preview].find(text => typeof text === 'string' && text.trim())?.toString().trim() ?? '',
+    return {...v, usage, title: [v.title, native.name, native.preview].find(text => typeof text === 'string' && text.trim())?.toString().trim() ?? '',
         lastTurnResult: v.lastTurnResult ?? undefined,
         createdAt: sessionTime(v.createdAt ?? native.createdAt), updatedAt: sessionTime(v.updatedAt ?? native.updatedAt)} as unknown as HarnessSession;
 }
@@ -43,7 +46,7 @@ export function validateProfiles(value: unknown): { epoch: string; profiles: Har
             || p.workspaces.some(w => typeof record(w).id !== 'string')
             || (caps.fork !== undefined && typeof caps.fork !== 'boolean')
             || (caps.search !== undefined && typeof caps.search !== 'boolean')
-            || ['rename', 'archive', 'unarchive', 'delete'].some(key => caps[key] !== undefined && typeof caps[key] !== 'boolean')
+            || ['usage', 'rename', 'archive', 'unarchive', 'delete'].some(key => caps[key] !== undefined && typeof caps[key] !== 'boolean')
             || caps.attachments !== undefined && (!Array.isArray(caps.attachments) || caps.attachments.length > 2 || caps.attachments.some(kind => !['text', 'image'].includes(String(kind))))
             || ['history','create','resume','interrupt','interactions'].some(key => typeof caps[key] !== 'boolean')) throw invalid();
     }
