@@ -23,3 +23,11 @@ it('rejects incomplete directory project responses before exposing them to calle
     const client=new MCPProjectClient({call:async()=>({project:{...project,revision:0}}),close:vi.fn()});
     await expect(client.read('p')).rejects.toThrow('Invalid project descriptor');
 });
+it('remounts the same project using its revision and validates the returned descriptor', async () => {
+    const call = vi.fn(async () => ({project: {...project, access: 'ro', revision: 3}}));
+    const client = new MCPProjectClient({call, close: vi.fn()});
+    expect(await client.remount(project, 'ro')).toMatchObject({id: project.id, access: 'ro', revision: 3});
+    expect(call).toHaveBeenCalledExactlyOnceWith('project_remount', {projectId: 'p', revision: 2, access: 'ro'}, undefined);
+    call.mockResolvedValueOnce({project: {...project, access: 'invalid', revision: 3}});
+    await expect(client.remount(project, 'rw')).rejects.toThrow('Invalid project descriptor');
+});

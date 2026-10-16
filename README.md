@@ -25,6 +25,8 @@ await adapter.dispose();
 
 `setCredential` 返回恢复先前凭据的函数；密码不进入持久连接记录。凭据解析器可以异步注入；工厂第二个参数为 harness 的 fetch 注入点。三个能力分别管理生命周期；`sync()` 返回句柄由消费者关闭，`dispose()` 释放文件 provider 和尚未关闭的 harness 客户端。关闭控制面板不会中断服务端 turn，中断必须显式调用 `interrupt()`。
 
+`ProjectClient.remount(project, access)` 调用 `project_remount`，携带现有项目 ID 和 revision，仅调整项目根的 `ro/rw` 权限。服务端验证导出授权和目录身份、拒绝在途执行并递增 revision；项目文件和原生会话保持保留。此方法为新增可选能力，旧服务返回不支持时由宿主保留原绑定。响应丢失后先 `read` 核对当前权限与版本，不盲目重复提交。
+
 文件 stat 在同一微任务批次按路径去重，响应分发给各订阅者；重复的 VFS 祖先路径校验不会在同一 HTTP 批次重复提交。每个订阅者保留独立取消与期限，最后一个订阅者取消才中断共享请求。不跨批次缓存属性或不存在结果，外部文件更新仍在后续读取重新查询。
 
 修改请求携带服务 epoch 和唯一 requestId。断网、超时或失去响应均不自动重放，错误保留 requestId，可用 `operation()` 确认收据。收据和接管关系为服务进程内状态，重启后必须重新发现 profile，不能跨 epoch 重放。每个 profile 保留至多 1024 条收据，不淘汰仍可能被查询的记录；达到上限拒绝新的修改。

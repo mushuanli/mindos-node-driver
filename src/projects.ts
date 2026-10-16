@@ -18,6 +18,7 @@ export interface ProjectClient {
     read(id: string, options?: OperationOptions): Promise<RemoteProject>;
     register(input: RegisterProject, options?: OperationOptions): Promise<RemoteProject>;
     configure(project: RemoteProject, name: string, mounts: ProjectMount[], options?: OperationOptions): Promise<RemoteProject>;
+    remount?(project: RemoteProject, access: 'ro' | 'rw', options?: OperationOptions): Promise<RemoteProject>;
     forget(project: RemoteProject, options?: OperationOptions): Promise<void>;
     exec(project: RemoteProject, input: {command: string; args: string[]; cwd?: string; timeoutMs?: number; readOnly?: boolean; epoch: string; requestId: string}, options?: OperationOptions): Promise<ProjectProcess>;
     harness(project: RemoteProject, options?: {readOnly?: boolean}): HarnessClient;
@@ -44,6 +45,9 @@ export class MCPProjectClient implements ProjectClient {
     register(input: RegisterProject, options?: OperationOptions) { return this.project('project_register',input,options); }
     configure(project: RemoteProject, name: string, mounts: ProjectMount[], options?: OperationOptions) {
         return this.project('project_configure',{projectId:project.id,revision:project.revision,name,mounts},options);
+    }
+    remount(project: RemoteProject, access: 'ro' | 'rw', options?: OperationOptions) {
+        return this.project('project_remount', {projectId: project.id, revision: project.revision, access}, options);
     }
     async forget(project: RemoteProject, options?: OperationOptions) {
         const value=await this.rpc.call('project_forget',{projectId:project.id,revision:project.revision},options) as {forgotten?: string};
