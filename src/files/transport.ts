@@ -13,6 +13,8 @@ import { checkOperation, FSError, FSOperationCancelledError, operationScope, typ
 export interface HttpConnectionOptions {
     endpoint: string;
     credential: () => string | Promise<string>;
+    anonymous?: boolean;
+    authorization?: import('../authorization').RemoteAuthorization;
     username?: string;
     fetch?: typeof globalThis.fetch;
     timeoutMs?: number;
@@ -57,8 +59,7 @@ export class HttpTransport {
         let sent = false;
         try {
             checkOperation(scope.options);
-            const token = await this.config.credential(); checkOperation(scope.options);
-            const headers = new Headers(init.headers); headers.set('Authorization', this.authorization(token));
+            const headers = await this.headers(init.headers); checkOperation(scope.options);
             if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
             sent = true;
             const response = await this.send(route, { ...init, headers }, scope.options, scope.remaining);
@@ -79,9 +80,8 @@ export class HttpTransport {
         let sent = false;
         try {
             checkOperation(scope.options);
-            const token = await this.config.credential(); checkOperation(scope.options);
-            const headers = new Headers(init.headers);
-            headers.set('Authorization', this.authorization(token)); headers.set('X-Operation-Id', operationId);
+            const headers = await this.headers(init.headers); checkOperation(scope.options);
+            headers.set('X-Operation-Id', operationId);
             headers.set('X-Timeout-Ms', String(Math.max(1, Math.floor(scope.remaining() ?? 30_000))));
             sent = true;
             const response = await (this.config.fetch ?? globalThis.fetch)(new URL(route, this.endpoint), {
@@ -109,6 +109,16 @@ export class HttpTransport {
         if (!this.config.username || /[:\r\n]/.test(this.config.username)) throw new FSError('EINVAL', 'Invalid username');
         const bytes = new TextEncoder().encode(`${this.config.username}:${secret}`);
         return `Basic ${btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''))}`;
+    }
+    private async headers(input?: HeadersInit): Promise<Headers> {
+        const headers = new Headers(input);
+        if (this.config.authorization) {
+            headers.set('x-pi-agent-principal', this.config.authorization.principalId);
+            headers.set('x-pi-agent-grant-revision', this.config.authorization.revision);
+        }
+        if (this.config.anonymous) headers.delete('Authorization');
+        else headers.set('Authorization', this.authorization(await this.config.credential()));
+        return headers;
     }
     private async send(route: string, init: RequestInit, options: OperationOptions, remaining: () => number | undefined): Promise<Response> {
         for (let attempt = 0; ; attempt++) {

@@ -1,3 +1,4 @@
+import {validateAuthorization, validateProjectCapabilities, type RemoteAuthorization, type RemoteProjectCapabilities} from './authorization';
 import { MCPDirectorySyncClient, type DirectorySyncClient } from './directory-sync';
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import { MCPHarnessClient } from './harness/client';
@@ -7,6 +8,7 @@ import { validateFileSearch, type FileSearchQuery, type FileSearchResult } from 
 
 export interface ProjectMount { alias: string; path: string; at: string; access: 'ro' | 'rw' }
 export interface RemoteProject {
+    authorization?: RemoteAuthorization; capabilities?: RemoteProjectCapabilities;
     id: string; name: string; alias: string; path: string; access: 'ro' | 'rw'; revision: number; mounts: ProjectMount[];
 }
 export interface RegisterProject { name: string; alias: string; path: string; access: 'ro' | 'rw'; mounts?: ProjectMount[]; createDirectory?: boolean }
@@ -58,7 +60,7 @@ export class MCPProjectClient implements ProjectClient {
         if (!value?.process || typeof value.process.state !== 'string' || typeof value.process.stdout !== 'string' || typeof value.process.stderr !== 'string') throw new FSError('EIO','Invalid project process');
         return value.process;
     }
-    harness(project: RemoteProject, options?: {readOnly?: boolean}) { return new MCPHarnessClient(this.rpc,{projectId:project.id,revision:project.revision,...options}); }
+    harness(project: RemoteProject, options?: {readOnly?: boolean}) { return new MCPHarnessClient(this.rpc,{projectId:project.id,revision:project.revision,capabilities:project.capabilities,...options}); }
     private async project(name: string, args: object, options?: OperationOptions) {
         const value = await this.rpc.call(name,args,options) as {project?: unknown}; return validateProject(value?.project);
     }
@@ -72,5 +74,5 @@ function validateProject(value: unknown): RemoteProject {
         || project.revision < 1 || !Array.isArray(project.mounts)) throw new FSError('EIO','Invalid project descriptor');
     if (project.mounts.some(mount => !mount || typeof mount.alias !== 'string' || typeof mount.path !== 'string'
         || typeof mount.at !== 'string' || !['ro','rw'].includes(mount.access))) throw new FSError('EIO','Invalid project mount');
-    return project;
+    return {...project, authorization: validateAuthorization(project.authorization), capabilities: validateProjectCapabilities(project.capabilities)};
 }

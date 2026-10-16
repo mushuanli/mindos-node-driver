@@ -1,4 +1,6 @@
 export { createPiAgentDriver } from './provider';
+export type { RemoteAuthorization, RemoteProjectCapabilities } from './authorization';
+export { validateAuthorization } from './authorization';
 export type { PiAgentDriver, PiAgentDescriptor } from './provider';
 export * from './files/index';
 export type { HarnessClient, HarnessMutationOptions, HarnessProfile, HarnessSession, HarnessPage, HarnessHistory, HarnessHistoryOptions, HarnessEvent, HarnessEvents, HarnessReceipt } from './harness/contracts';

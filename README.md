@@ -114,3 +114,11 @@ Codex profile 声明 rename/archive/unarchive 与 attachments 能力。`harness.
 ### Native usage
 
 `HarnessSession.usage` and conversation snapshots carry validated native transcript usage from pi-agent 0.1.5+. `HarnessClient.usage(profileId, sessionId)` queries the read-only tool directly; ordinary viewers reuse the usage piggybacked on history/inspection. Unsupported older servers leave usage absent. The client validates session identity, safe nonnegative token counts, unique entries and matching totals. Input/cache buckets are disjoint, reasoning is already part of output. This package has no model catalog, pricing fallback or billing policy; hosts may decorate snapshots with their own estimates.
+
+### Directory principals and public access (0.2)
+
+A connection can explicitly set `anonymous: true` to access public read-only exports. The driver omits Authorization and never resolves a credential in this mode; a failed authenticated request never falls back to anonymous access. Authenticated connections continue using Bearer or Basic credentials supplied by the host.
+
+Discovery exposes an optional `authorization` snapshot (`principalId`, `anonymous`, `revision`). Pass it on the connection to fence subsequent HTTP and MCP requests to the same identity and grant revision. Source pooling includes this snapshot and anonymous mode. A changed grant requires explicit discovery and refreshing the binding; it cannot silently reuse another user's view. The pure `@itookit/piagent-driver/authorization` entry validates snapshots without loading the MCP runtime.
+
+Projects expose optional effective capabilities for file reads/writes, execution and session control. A read-only file mount can permit native conversation control when the server grants execution separately. Servers without these fields retain the host's conservative legacy behavior. The driver implements transport and validation; directory ACL policy and user-to-credential binding belong to the server and host respectively.

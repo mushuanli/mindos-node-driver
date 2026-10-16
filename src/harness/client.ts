@@ -9,7 +9,7 @@ export class MCPHarnessClient implements HarnessClient {
     private epoch?: string;
     private watchId?: string;
     private filesEnabled?: boolean;
-    constructor(private readonly rpc: HarnessRpc, private readonly scope: {projectId: string; revision: number; readOnly?: boolean} | undefined = undefined) {}
+    constructor(private readonly rpc: HarnessRpc, private readonly scope: {projectId: string; revision: number; readOnly?: boolean; capabilities?: import('../authorization').RemoteProjectCapabilities} | undefined = undefined) {}
     async directoryVersion(options?: OperationOptions): Promise<string | undefined> {
         if (!this.scope) return;
         if (this.filesEnabled === undefined) {
@@ -36,7 +36,8 @@ export class MCPHarnessClient implements HarnessClient {
     async profiles(options?: OperationOptions) {
         const value = validateProfiles(await this.rpc.call('harness_profiles', {}, options));
         this.epoch = value.epoch;
-        if (this.scope) value.profiles=value.profiles.filter(profile => profile.projectRuntime).map(profile => ({...profile,workspaces:[{id:this.scope!.projectId}]}));
+        if (this.scope) value.profiles=value.profiles.filter(profile => profile.projectRuntime).map(profile => ({...profile,projectCapabilities:this.scope!.capabilities,workspaces:[{id:this.scope!.projectId}]}));
+        if (this.scope?.capabilities?.sessionControl === false) value.profiles=value.profiles.map(profile => ({...profile, capabilities:{...profile.capabilities,create:false,resume:false,interrupt:false,interactions:false,fork:false,rename:false,archive:false,unarchive:false,delete:false}}));
         return value;
     }
     async list(profileId: string, query = {}, options?: OperationOptions): Promise<HarnessPage> {

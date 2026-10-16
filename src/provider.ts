@@ -1,3 +1,4 @@
+import { validateAuthorization, type RemoteAuthorization } from './authorization';
 import { createHttpSourceProvider, type HttpSourceProvider, type RemoteConnection } from './files/index';
 import { FSError, createFileSystemSource, FileStorageAdapter, type FileSystemSourceOwner } from '@itookit/vfs-core';
 import { HttpFSBackend } from './files/index';
@@ -12,7 +13,7 @@ import { HarnessConversation, type HarnessConversationPort } from './harness/con
 import { HarnessStatusObserver, type HarnessStatusPort } from './harness/status-observer';
 
 type Connection = Omit<RemoteConnection, 'alias'>;
-export interface PiAgentDescriptor { version: 1; httpEndpoint: string; serverId: string | null; fileProtocol: 'fs-agent-http-v1'; harness: boolean; projects?: boolean; sync?: boolean; projectProtocol?: string; directorySync?: boolean; directorySyncVersion?: number; fileSearch?: boolean; fileWatch?: boolean; }
+export interface PiAgentDescriptor { authorization?: RemoteAuthorization; version: 1; httpEndpoint: string; serverId: string | null; fileProtocol: 'fs-agent-http-v1'; harness: boolean; projects?: boolean; sync?: boolean; projectProtocol?: string; directorySync?: boolean; directorySyncVersion?: number; fileSearch?: boolean; fileWatch?: boolean; }
 export interface PiAgentDriver extends HttpSourceProvider {
     observeHarness(client: HarnessClient, writable?: boolean): HarnessStatusPort;
     open(connection: RemoteConnection & {serverProjectId?: string; serverProjectRevision?: number; access?: 'ro' | 'rw'}, options?: import('@itookit/vfs-core').OperationOptions): ReturnType<HttpSourceProvider['open']>;
@@ -50,7 +51,10 @@ export function createPiAgentDriver(resolveCredential?: (reference: string) => s
                     || !(value.serverId === null || typeof value.serverId === 'string')) throw new FSError('ECAPABILITY', 'Invalid pi-agent discovery');
                 const mcp = new URL(connection.endpoint), http = new URL(value.httpEndpoint, mcp);
                 if (http.origin !== mcp.origin || http.username || http.password || http.search || http.hash) throw new FSError('EACCES', 'Invalid pi-agent HTTP endpoint');
-                return { ...value, httpEndpoint: http.href.replace(/\/+$/, '') };
+                const authorization = validateAuthorization(value.authorization);
+                if (authorization && authorization.anonymous !== !!connection.anonymous)
+                    throw new FSError('EACCES', 'Remote authentication mode changed');
+                return { ...value, authorization, httpEndpoint: http.href.replace(/\/+$/, '') };
             } finally { await rpc.close(); }
         },
         setCredential(ref: string, value: string) {
@@ -86,7 +90,7 @@ export function createPiAgentDriver(resolveCredential?: (reference: string) => s
         async projectProcess(connection: Connection, project: RemoteProject, spec: Parameters<HttpSourceProvider['process']>[1]) {
             const projects = new MCPProjectClient(createHarnessRpc(connection.endpoint,authenticatedFetch(connection,credential,fetch)));
             try {
-                const owner=createProjectProcess({endpoint:connection.endpoint,username:connection.username,credential:() => credential(connection.credentialRef),fetch},projects,project,spec);
+                const owner=createProjectProcess({...connection,credential:() => credential(connection.credentialRef),fetch},projects,project,spec);
                 const release=owner.release.bind(owner);
                 owner.release=async () => {await release(); processes.delete(owner);};
                 processes.add(owner); return owner;
@@ -127,7 +131,10 @@ function authenticatedFetch(connection: Connection, credential: (ref: string) =>
     if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
         throw new FSError('EINVAL', 'Invalid agent endpoint');
     return async (input, init) => {
-        const headers = new Headers(init?.headers), secret = await credential(connection.credentialRef);
+        const headers = new Headers(init?.headers);
+        if (connection.authorization) { headers.set('x-pi-agent-principal',connection.authorization.principalId); headers.set('x-pi-agent-grant-revision',connection.authorization.revision); }
+        if (connection.anonymous) { headers.delete('Authorization'); return boundedResponse(await fetch(input, {...init, headers, redirect:'error', credentials:'omit', cache:'no-store'})); }
+        const secret = await credential(connection.credentialRef);
         const bytes = new TextEncoder().encode(`${connection.username}:${secret}`);
         if (connection.username !== undefined && (!connection.username || /[:\r\n]/.test(connection.username))) throw new FSError('EINVAL', 'Invalid username');
         headers.set('Authorization', connection.username === undefined ? `Bearer ${secret}` : `Basic ${btoa(Array.from(bytes,b => String.fromCharCode(b)).join(''))}`);

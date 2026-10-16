@@ -2,6 +2,7 @@ import type { OperationOptions } from '@itookit/vfs-core';
 import type { HarnessUsage } from './usage';
 
 export interface HarnessProfile {
+    projectCapabilities?: import('../authorization').RemoteProjectCapabilities;
     id: string; kind: string; projectRuntime?: boolean; workspaces: Array<{ id: string }>;
     capabilities: { usage?: boolean; history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; delete?: boolean; attachments?: Array<'text' | 'image'> };
 }

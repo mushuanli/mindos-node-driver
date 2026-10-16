@@ -96,7 +96,7 @@ export class HarnessStatusObserver implements HarnessStatusPort {
             const observation = harnessObservation(session, requests, {observedAt,
                 source: fresh ? 'events' : prior.source, stale: this.now() - observedAt > 30_000,
                 connection: page.events.some(e => e.message.method === 'harness/disconnected' && (!e.message.params?.threadId || e.message.params.threadId === id)) ? 'offline' : fresh ? 'online' : prior.connection});
-            const controlled = this.writable && observation.owned && !observation.stale && observation.connection === 'online';
+            const controlled = (state.profile.projectCapabilities?.sessionControl ?? this.writable) && observation.owned && !observation.stale && observation.connection === 'online';
             observation.canInterrupt = controlled && !!session.activeTurnId && state.profile.capabilities.interrupt;
             observation.canRespond = controlled && !!requests.length && state.profile.capabilities.interactions;
             state.observations.set(id, observation);

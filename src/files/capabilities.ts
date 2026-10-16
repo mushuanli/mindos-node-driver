@@ -1,9 +1,11 @@
+import { validateAuthorization, type RemoteAuthorization } from '../authorization';
 import { readExports } from './protocol/exports';
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import { HttpTransport, HttpResponseError } from './transport';
 
 /** Discovery describes support, never a grant to execute in a directory. */
 export interface RemoteServerCapabilities {
+    authorization?: RemoteAuthorization;
     version: 1;
     serverId: string | null;
     processEpoch?: string;
@@ -43,6 +45,6 @@ function parseCapabilities(value: unknown): RemoteServerCapabilities {
     if (v.files.seq !== undefined && (!v.files.seq || v.files.seq.version !== 1 || typeof v.files.seq.sqlite !== 'boolean'
         || v.files.seq.transactionScope !== 'file')) throw invalid();
     if (v.terminal.pty && !v.process.exec) throw invalid();
-    return structuredClone(v);
+    return {...structuredClone(v), authorization: validateAuthorization(v.authorization)};
 }
 function invalid() { return new FSError('EIO', 'Invalid server capabilities', 'protocol'); }

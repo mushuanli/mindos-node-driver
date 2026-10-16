@@ -7,7 +7,7 @@ import { SourcePool } from './provider/source-pool';
 import { readExports } from './protocol/exports';
 import { HttpTransport } from './transport';
 
-export interface RemoteConnection { endpoint: string; alias: string; credentialRef: string; username?: string; }
+export interface RemoteConnection { endpoint: string; alias: string; credentialRef: string; username?: string; anonymous?: boolean; authorization?: import('../authorization').RemoteAuthorization; }
 type ServerConnection = Omit<RemoteConnection, 'alias'>;
 type CredentialResolver = (reference: string) => string | Promise<string>;
 
@@ -102,5 +102,5 @@ class SourceProvider implements HttpSourceProvider {
 
 /** Credential identity participates in sharing; the secret itself never does. */
 function connectionKey(connection: RemoteConnection): string {
-    return JSON.stringify([connection.endpoint, connection.alias, connection.credentialRef, connection.username ?? '']);
+    return JSON.stringify([connection.endpoint, connection.alias, connection.credentialRef, connection.username ?? '', connection.anonymous, connection.authorization]);
 }
