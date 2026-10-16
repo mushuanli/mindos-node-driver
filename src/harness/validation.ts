@@ -43,6 +43,7 @@ export function validateProfiles(value: unknown): { epoch: string; profiles: Har
     for (const profile of v.profiles) {
         const p = record(profile), caps = record(p.capabilities);
         if (typeof p.id !== 'string' || !p.id || typeof p.kind !== 'string' || !p.kind || !Array.isArray(p.workspaces)
+            || p.aliases !== undefined && (!Array.isArray(p.aliases) || p.aliases.length > 128 || p.aliases.some(alias => typeof alias !== 'string' || !alias))
             || p.workspaces.some(w => typeof record(w).id !== 'string')
             || (caps.fork !== undefined && typeof caps.fork !== 'boolean')
             || (caps.search !== undefined && typeof caps.search !== 'boolean')

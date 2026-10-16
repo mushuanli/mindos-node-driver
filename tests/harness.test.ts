@@ -1,9 +1,16 @@
 import { expect, it, vi } from 'vitest';
 import { MCPHarnessClient } from '../src/harness/client';
 import { createPiAgentDriver } from '../src/provider';
-import { validateEvents, validateHistory, validatePage, validateSession } from '../src/harness/validation';
+import { validateEvents, validateHistory, validatePage, validateProfiles, validateSession } from '../src/harness/validation';
 
 const session = { id: 's',title:'<script>x</script>',cwd:'/workspace',status:'idle',updatedAt:1,resumable:true };
+it('retains profile aliases and rejects malformed alias metadata', () => {
+    const profile = {id:'codex',kind:'codex',aliases:['codex-main'],workspaces:[],
+        capabilities:{history:true,create:true,resume:true,interrupt:true,interactions:true}};
+    expect(validateProfiles({epoch:'e',profiles:[profile]}).profiles[0].aliases).toEqual(['codex-main']);
+    for (const aliases of ['codex-main', [false], [''], Array(129).fill('old')])
+        expect(() => validateProfiles({epoch:'e',profiles:[{...profile,aliases}]})).toThrow();
+});
 it('retains distinct creation and modification instants and accepts legacy native seconds without repeated conversion', () => {
     const legacy = {...session, title: ' ', updatedAt: 1791458565, native: {name: '', preview: 'Fix session navigation', createdAt: 1791458500}};
     const expected = {title: 'Fix session navigation', createdAt: 1791458500000, updatedAt: 1791458565000};
