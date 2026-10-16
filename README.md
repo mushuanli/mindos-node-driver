@@ -109,6 +109,8 @@ Codex profile 声明 rename/archive/unarchive 与 attachments 能力。`harness.
 
 原生 Codex 管理包含 rename/archive/unarchive/delete。永久删除沿用 epoch/requestId/receipt，客户端持久化删除标记；恢复时先核对删除回执，避免重放或读取已删除历史。notLoaded 的执行状态保持 unknown，归档原生历史不代表停止独立 CLI。
 
+`HarnessSession.archiveAllowed` is optional native management eligibility, separate from attachment ownership. `harnessArchiveAllowed` combines this hint with idle/archive guards; conversations additionally require writable access, profile support and a current connection. Older nodes retain the conservative unloaded-or-owned-idle rule. Hosts can reuse the helper for navigation menus without branching on harness kind; the server rechecks permission and native state when committing an archive.
+
 `HarnessConversation.snapshot().submittedTurnId` 保留本视图最近一次已确认发送的原生轮次身份，历史尚未回显时也可供界面替换临时卡片；开始新发送时重置。只有 turn 成功或对应 committed 回执才设置，resume/create 成功不算消息已提交。原生 `HARNESS_SESSION_BUSY` 拒绝恢复时保留草稿，不调用 turn。
 
 ### Native usage

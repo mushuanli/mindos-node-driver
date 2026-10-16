@@ -4,6 +4,10 @@ import { createPiAgentDriver } from '../src/provider';
 import { validateEvents, validateHistory, validatePage, validateProfiles, validateSession } from '../src/harness/validation';
 
 const session = { id: 's',title:'<script>x</script>',cwd:'/workspace',status:'idle',updatedAt:1,resumable:true };
+it('validates optional native archive eligibility without accepting truthy values', () => {
+    for (const archiveAllowed of [true, false]) expect(validateSession({...session, archiveAllowed}).archiveAllowed).toBe(archiveAllowed);
+    for (const archiveAllowed of ['true', 1, null, {}]) expect(() => validateSession({...session, archiveAllowed})).toThrow();
+});
 it('retains profile aliases and rejects malformed alias metadata', () => {
     const profile = {id:'codex',kind:'codex',aliases:['codex-main'],workspaces:[],
         capabilities:{history:true,create:true,resume:true,interrupt:true,interactions:true}};

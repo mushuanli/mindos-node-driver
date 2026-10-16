@@ -237,6 +237,16 @@ it('denies metadata mutations on read-only, unsupported, busy and unowned archiv
     await expect(external.archive(true)).rejects.toMatchObject({code: 'EACCES'});
     expect(client.archive).not.toHaveBeenCalled(); await readonly.close(); await external.close();
 });
+it('uses native archive eligibility for idle unowned sessions without resuming them', async () => {
+    const client = peer(), capable = {...profile, capabilities: {...profile.capabilities, archive: true}};
+    vi.mocked(client.read).mockResolvedValue({session: {...session, owned: false, archiveAllowed: true}, turns: []});
+    client.archive = vi.fn(async () => ({session: {...session, owned: false, archived: true, archiveAllowed: false}}));
+    const view = new HarnessConversation(client, capable, 'p', 's');
+    expect(await view.read()).toMatchObject({canArchive: true});
+    expect(await view.archive(true)).toMatchObject({archived: true, canArchive: false});
+    expect(client.resume).not.toHaveBeenCalled(); expect(client.turn).not.toHaveBeenCalled();
+    await view.close();
+});
 
 it('preserves attachment drafts through closure and unknown receipts without replaying a native turn', async () => {
     const client = peer(); let record: HarnessRecovery | undefined;

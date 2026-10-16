@@ -2,7 +2,7 @@ import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessProfile, HarnessSession, HarnessEvents, HarnessAttachment } from './contracts';
 import { conversationBranches } from './branches';
 import { validateAttachments, validateDeletedSessionIds, validateSession } from './validation';
-import { applyHarnessStatus, harnessObservation } from './state';
+import { applyHarnessStatus, harnessObservation, harnessArchiveAllowed } from './state';
 import type { HarnessConversationJournal } from './conversation-journal';
 import { mergeMessages, historyMessages, nativeMessage, nativeRequest, type HarnessMessage, type HarnessRequest } from './conversation-model';
 
@@ -55,7 +55,7 @@ export class HarnessConversation implements HarnessConversationPort {
                 && (observation.execution === 'idle' && !!this.session?.owned || !!this.session?.archived && this.session?.status === 'notLoaded'),
             archived: !!this.session?.archived,
             canRename: manageable && !!this.client.rename && !!this.profile.capabilities.rename,
-            canArchive: manageable && !this.session?.archived && (this.session?.status === 'notLoaded' || !!this.session?.owned && observation.execution === 'idle') && !!this.client.archive && !!this.profile.capabilities.archive,
+            canArchive: manageable && harnessArchiveAllowed(this.session) && !!this.client.archive && !!this.profile.capabilities.archive,
             canUnarchive: manageable && !!this.session?.archived && !!this.client.archive && !!this.profile.capabilities.unarchive,
             createdAt: this.session?.createdAt, updatedAt: this.session?.updatedAt,
             branchName: this.session?.branchName ?? (this.session?.parentSessionId ? undefined : 'main'),

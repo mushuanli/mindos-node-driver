@@ -23,6 +23,7 @@ export function validateSession(value: unknown): HarnessSession {
         || (v.forkable !== undefined && typeof v.forkable !== 'boolean')
         || (v.owned !== undefined && typeof v.owned !== 'boolean')
         || (v.archived !== undefined && typeof v.archived !== 'boolean')
+        || (v.archiveAllowed !== undefined && typeof v.archiveAllowed !== 'boolean')
         || !(v.activeTurnId === undefined || v.activeTurnId === null || typeof v.activeTurnId === 'string')) throw invalid();
     if (v.statusDetails !== undefined && v.statusDetails !== null) {
         const status = record(v.statusDetails);

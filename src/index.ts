@@ -16,7 +16,7 @@ export type { HarnessMessage, HarnessRequest } from './harness/conversation-mode
 export type { HarnessConversationJournal, HarnessRecovery } from './harness/conversation-journal';
 
 export type { HarnessConversationPort, HarnessConversationSnapshot } from './harness/conversation';
-export { harnessObservation } from './harness/state';
+export { harnessObservation, harnessArchiveAllowed } from './harness/state';
 export type { HarnessObservation, HarnessExecutionState } from './harness/state';
 export type { HarnessStatusPort, HarnessStatusRow } from './harness/status-observer';
 export type { FileSearchQuery, FileSearchResult, FileSearchMatch } from './search';

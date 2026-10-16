@@ -17,6 +17,13 @@ export interface HarnessObservation {
     canInterrupt: boolean;
     canRespond: boolean;
 }
+/** Native eligibility refines the legacy rule without changing execution or authorization. */
+export function harnessArchiveAllowed(session: HarnessSession | undefined): boolean {
+    if (!session || session.archived || session.activeTurnId) return false;
+    const idle = harnessObservation(session).execution === 'idle';
+    if (!idle && session.status !== 'notLoaded') return false;
+    return session.archiveAllowed ?? (session.status === 'notLoaded' || !!session.owned && idle);
+}
 export function harnessObservation(session: HarnessSession | undefined, requests: Array<{kind: string}> = [],
     evidence: Partial<HarnessObservation> = {}): HarnessObservation {
     const flags = session?.statusDetails?.activeFlags ?? [];

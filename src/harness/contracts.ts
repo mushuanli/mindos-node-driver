@@ -19,6 +19,8 @@ export interface HarnessSession {
     statusDetails?: {type: string; activeFlags?: string[]} | null;
     lastTurnResult?: 'completed' | 'failed' | 'cancelled';
     archived?: boolean;
+    /** Native management eligibility; independent of client attachment ownership. */
+    archiveAllowed?: boolean;
 }
 export interface HarnessEvent { seq: number; timestamp?: number; message: { method: string; id?: string | number; params?: Record<string, unknown> } }
 export interface HarnessEvents {

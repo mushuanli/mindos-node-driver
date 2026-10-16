@@ -3,7 +3,7 @@ export { HarnessConversation } from './conversation';
 export type { HarnessConversationPort, HarnessConversationSnapshot } from './conversation';
 export type { HarnessMessage, HarnessRequest } from './conversation-model';
 export type { HarnessConversationJournal, HarnessRecovery } from './conversation-journal';
-export { harnessObservation, applyHarnessStatus } from './state';
+export { harnessObservation, applyHarnessStatus, harnessArchiveAllowed } from './state';
 export type { HarnessObservation, HarnessExecutionState } from './state';
 export { HarnessStatusObserver } from './status-observer';
 export type { HarnessStatusPort, HarnessStatusRow } from './status-observer';
