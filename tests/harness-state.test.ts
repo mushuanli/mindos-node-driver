@@ -53,7 +53,7 @@ it('repairs gaps and epochs with metadata, discards stale events, and keeps offl
     vi.mocked(client.events).mockResolvedValue({...page, epoch: 'new', gap: true, cursor: 1,
         events: [{seq: 1, message: {method: 'turn/started', params: {threadId: 's', turn: {id: 'old'}}}}]});
     expect((await observer.poll())[0].observation.execution).toBe('idle'); expect(client.list).toHaveBeenCalledTimes(2);
-    vi.mocked(client.events).mockRejectedValueOnce(new Error('offline'));
+    vi.mocked(client.events).mockRejectedValueOnce(new TypeError('fetch failed'));
     expect((await observer.poll())[0].observation).toMatchObject({connection: 'offline', stale: true, lastResult: undefined});
     advance(); vi.mocked(client.events).mockResolvedValue({...page, epoch: 'new'});
     expect((await observer.poll())[0].observation).toMatchObject({connection: 'online', stale: false});
@@ -99,4 +99,63 @@ it('carries native update time without granting execution state or control permi
     const updatedAt = Date.now();
     expect(harnessObservation({...session, status: 'notLoaded', updatedAt})).toMatchObject({updatedAt,
         execution: 'unknown', canInterrupt: false, canRespond: false, owned: false});
+});
+
+it('isolates directory watch failures and retains the last good file version', async () => {
+    const {client, observer} = fixture();
+    client.directoryVersion = vi.fn().mockResolvedValueOnce('watch:1').mockRejectedValueOnce(new Error('watch failed')).mockResolvedValue('watch:2');
+    await observer.poll();
+    expect((await observer.poll())[0].observation).toMatchObject({connection: 'online', stale: false});
+    expect(observer.fileVersion()).toBe('watch:1'); expect(client.events).toHaveBeenCalledTimes(2);
+    await observer.poll(); expect(observer.fileVersion()).toBe('watch:2');
+});
+
+it('isolates profile errors and recovers the failed transport immediately without new events', async () => {
+    const {client, observer} = fixture(), descriptor = await client.profiles();
+    vi.mocked(client.profiles).mockResolvedValue({...descriptor, profiles: [descriptor.profiles[0], {...descriptor.profiles[0], id: 'other'}]});
+    await observer.poll();
+    vi.mocked(client.events).mockRejectedValueOnce(Object.assign(new Error('socket closed'), {code: 'ECONNRESET'}));
+    const failed = await observer.poll();
+    expect(failed.find(row => row.profileId === 'p')?.observation).toMatchObject({connection: 'offline', stale: true});
+    expect(failed.find(row => row.profileId === 'other')?.observation).toMatchObject({connection: 'online', stale: false});
+    expect((await observer.poll()).every(row => row.observation.connection === 'online')).toBe(true);
+    expect(client.list).toHaveBeenCalledTimes(2);
+});
+
+it('reports protocol errors and timeouts as stale observations instead of lost connections', async () => {
+    const {client, observer} = fixture(); await observer.poll();
+    for (const code of ['REQUEST_TIMEOUT', 'EIO', 'EACCES']) {
+        vi.mocked(client.events).mockRejectedValueOnce(Object.assign(new Error('request failed'), {code}));
+        expect((await observer.poll())[0].observation).toMatchObject({connection: 'online', stale: true,
+            refreshError: {stage: 'events', code}, canInterrupt: false, canRespond: false});
+        const recovered = (await observer.poll())[0].observation;
+        expect(recovered).toMatchObject({connection: 'online', stale: false});
+        expect(recovered.refreshError).toBeUndefined();
+    }
+});
+
+it('does not turn metadata failure into a transport disconnection', async () => {
+    const {client, observer, advance} = fixture(); await observer.poll(); advance();
+    vi.mocked(client.list).mockRejectedValueOnce(new Error('bad metadata'));
+    expect((await observer.poll())[0].observation).toMatchObject({connection: 'online', stale: true,
+        refreshError: {stage: 'list', code: 'OBSERVATION_ERROR'}});
+    expect((await observer.poll())[0].observation).toMatchObject({connection: 'online', stale: false});
+});
+
+it.each(['ECONNRESET', 'EIO', 'EACCES', 'REQUEST_TIMEOUT'])('classifies list failure %s by transport evidence and isolates profiles', async code => {
+    const {client, observer, advance} = fixture(), descriptor = await client.profiles();
+    vi.mocked(client.profiles).mockResolvedValue({...descriptor, profiles: [descriptor.profiles[0], {...descriptor.profiles[0], id: 'other'}]});
+    try {
+        await observer.poll(); advance();
+        vi.mocked(client.list).mockRejectedValueOnce(Object.assign(new Error('request failed'), {code}));
+        const failed = await observer.poll();
+        expect(failed.find(row => row.profileId === 'p')?.observation).toMatchObject({
+            connection: code === 'ECONNRESET' ? 'offline' : 'online', stale: true,
+            refreshError: {stage: 'list', code}, canInterrupt: false, canRespond: false,
+        });
+        expect(failed.find(row => row.profileId === 'other')?.observation).toMatchObject({connection: 'online', stale: false});
+        const recovered = (await observer.poll()).find(row => row.profileId === 'p')!.observation;
+        expect(recovered).toMatchObject({connection: 'online', stale: false});
+        expect(recovered.refreshError).toBeUndefined();
+    } finally {await observer.close();}
 });

@@ -50,7 +50,45 @@ it('persists mutation identity before creation and blocks replay after reopening
 it('keeps a successfully committed turn accepted when its history refresh fails', async () => {
     const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
     vi.mocked(client.read).mockRejectedValueOnce(new Error('history offline'));
-    const state = await view.send('task'); expect(state.disconnected).toBe(true); expect(client.turn).toHaveBeenCalledOnce();
+    const state = await view.send('task');
+    expect(state.disconnected).toBe(false); expect(state.canSend).toBe(false);
+    expect(state.observation).toMatchObject({stale: true, refreshError: {stage: 'history', code: 'OBSERVATION_ERROR'}});
+    expect(client.turn).toHaveBeenCalledOnce();
+});
+
+it('distinguishes projection and inspect failures from network loss and clears recovered errors', async () => {
+    const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    client.inspect = vi.fn().mockRejectedValueOnce(Object.assign(new Error('bad reply'), {code: 'EIO'}))
+        .mockResolvedValue({session: {...session}});
+    expect(await view.poll()).toMatchObject({disconnected: false, observation: {stale: true, refreshError: {stage: 'inspect', code: 'EIO'}}});
+    expect((await view.poll()).observation.refreshError).toBeUndefined();
+    vi.mocked(client.events).mockRejectedValueOnce(new TypeError('fetch failed'));
+    expect((await view.poll()).disconnected).toBe(true);
+    expect((await view.read()).disconnected).toBe(false);
+    expect((await view.poll()).observation.refreshError).toBeUndefined();
+    await view.close();
+});
+
+it('keeps native process disconnection separate from a healthy empty event response', async () => {
+    const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    vi.mocked(client.events).mockResolvedValueOnce({epoch:'e',cursor:1,gap:false,requests:[],events:[
+        {seq:1,message:{method:'harness/disconnected',params:{threadId:'s'}}}]} );
+    expect((await view.poll()).disconnected).toBe(true);
+    vi.mocked(client.events).mockResolvedValue({epoch:'e',cursor:1,gap:false,requests:[],events:[]});
+    expect((await view.poll()).disconnected).toBe(true);
+    expect((await view.read()).disconnected).toBe(false);
+    await view.close();
+});
+
+it('disables native controls after a process disconnect even while its last activity is fresh', async () => {
+    const client = peer();
+    vi.mocked(client.read).mockResolvedValue({session: {...session, status: 'active', activeTurnId: 't'}, turns: []});
+    const view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    expect(view.snapshot().canInterrupt).toBe(true);
+    vi.mocked(client.events).mockResolvedValue({epoch: 'e', cursor: 1, gap: false, requests: [], events: [
+        {seq: 1, message: {method: 'harness/disconnected', params: {threadId: 's'}}}]});
+    expect(await view.poll()).toMatchObject({disconnected: true, canInterrupt: false, canRespond: false, canSend: false, canRename: false});
+    await view.close();
 });
 it('denies sending, interruption and approvals for an attenuated read-only project', async () => {
     const client = peer(), view = new HarnessConversation(client, profile, 'p', 's', false); await view.read();
@@ -140,6 +178,23 @@ it('preserves every request and response in native content arrays with real time
     expect(messages[1]).not.toHaveProperty('contentParts');
     expect(messages.map(message => message.turnId)).toEqual(['t1', 't1', 't1', 't2']);
     expect(messages.map(message => message.timestamp)).toEqual([1791458565000, 1791458566000, 1791458567000, undefined]);
+});
+
+it('keeps explicit context provenance aligned with every flattened native text part', () => {
+    const [message] = historyMessages({session, turns: [{id: 't', items: [{id: 'u', type: 'userMessage',
+        content: [{text: '# AGENTS.md instructions'}, {content: [{text: 'first request'}, {text: 'second request'}]}],
+        contentItemKinds: ['agents_md.instructions', 'user.text']}]}]});
+    expect(message.contentParts).toEqual(['# AGENTS.md instructions', 'first request', 'second request']);
+    expect(message.contentPartKinds).toEqual(['agents_md.instructions', 'user.text', 'user.text']);
+    expect(message.text).toBe('# AGENTS.md instructions\nfirst request\nsecond request');
+});
+it('ignores absent or misaligned provenance without inferring context from prompt contents', () => {
+    for (const kinds of [undefined, [], ['agents_md.instructions', 'user.text'], [1]]) {
+        const [message] = historyMessages({session, turns: [{items: [{id: 'u', type: 'userMessage',
+            content: [{text: '<environment_context>literal user request</environment_context>'}], contentItemKinds: kinds}]}]});
+        expect(message.contentPartKinds).toBeUndefined();
+        expect(message.text).toContain('literal user request');
+    }
 });
 
 it('keeps loaded earlier history during refresh without silently discarding messages above the old budget', async () => {

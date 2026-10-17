@@ -4,6 +4,8 @@ import { toolSummary, type ToolOperation } from './tool-summary';
 export interface HarnessMessage {
     id: string; role: 'user' | 'assistant' | 'tool' | 'system'; text: string; status?: string;
     contentParts?: string[];
+    /** Native provenance aligned with contentParts; unknown origins stay visible. */
+    contentPartKinds?: string[];
     turnId?: string; name?: string; input?: string; inputLanguage?: 'bash' | 'json' | 'text';
     timestamp?: number; paths?: string[]; operation?: ToolOperation; commandPreview?: string;
 }
@@ -20,7 +22,14 @@ export function nativeMessage(value: unknown, fallback: string, turnId?: string,
     return {id: typeof item.id === 'string' ? item.id : fallback, role, text, turnId: typeof item.turnId === 'string' ? item.turnId : turnId,
         timestamp: messageTime(item.timestamp ?? item.createdAt ?? item.startedAt) ?? at,
         status: typeof item.status === 'string' ? item.status : undefined,
-        ...(role === 'user' && Array.isArray(item.content) && typeof item.text !== 'string' ? {contentParts: parts} : {}), ...summary};
+        ...(role === 'user' && Array.isArray(item.content) && typeof item.text !== 'string'
+            ? {contentParts: parts, contentPartKinds: contentKinds(item)} : {}), ...summary};
+}
+function contentKinds(item: Record<string, unknown>): string[] | undefined {
+    const kinds = item.contentItemKinds, content = item.content;
+    if (!Array.isArray(kinds) || !Array.isArray(content) || kinds.length !== content.length
+        || !kinds.every(kind => typeof kind === 'string') || textParts(item.summary).length) return;
+    return content.flatMap((part, index) => textParts(part).map(() => kinds[index] as string));
 }
 export function messageTime(value: unknown): number | undefined {
     const time = typeof value === 'string' ? Date.parse(value) : typeof value === 'number' ? value < 100_000_000_000 ? value * 1000 : value : NaN;

@@ -1,4 +1,6 @@
 import type { HarnessSession, HarnessEvent } from './contracts';
+import type { HarnessObservationError } from './observation-errors';
+export type { HarnessObservationError } from './observation-errors';
 
 export type HarnessExecutionState = 'unknown' | 'idle' | 'running' | 'waiting-approval' | 'waiting-input';
 export interface HarnessObservation {
@@ -13,6 +15,7 @@ export interface HarnessObservation {
     source: 'list' | 'inspect' | 'history' | 'events';
     connection: 'online' | 'offline';
     stale: boolean;
+    refreshError?: HarnessObservationError;
     receiptUnknown: boolean;
     canInterrupt: boolean;
     canRespond: boolean;

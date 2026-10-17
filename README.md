@@ -65,7 +65,7 @@ plan; never replace an `applying` plan. Deletes and project mounts are excluded.
 
 `HarnessSession.createdAt` 与 `updatedAt` 分别表示创建及最后修改的 Unix 毫秒时间，缺失为 null；createdAt 为可选字段以兼容旧服务。驱动统一转换旧服务的秒时间，从 native.createdAt 恢复缺失的创建时间，不用修改时间冒充创建时间。空标题可回退 native.name/preview，展示层使用未命名会话兜底，原生 ID 继续用于路由与操作。
 
-会话消息保留原生 `turnId` 和毫秒 `timestamp`，内容数组中的所有请求、回复均按顺序展开；用户文字项还通过 contentParts 保留边界，展示层在项间插入 Markdown 分隔线，plain-text 预览保持原格式；`branchName` 独立于会话标题，根分支使用 main。`HarnessConversation` 为历史和事件请求 `toolDetail: 'summary'`，工具仅保留名称、操作、首个非空命令行（最多 240 个字符）和目标路径，忽略工具输出增量；旧服务的详细工具数据也在驱动内转换为摘要。`loadEarlier` 合并稳定 ID 并拒绝循环游标，刷新和事件恢复保留已加载的早期页面。itookit 在历史顶部提供按需分页入口，点击才读取更早记录，保留加载进度及失败重试入口。总容量为 10,000 条/32 MiB，超过时明确失败并保留现有内容与游标，不静默裁剪。宿主按轮次把请求与该轮全部响应分别投影为一个 Markdown 编辑器。驱动不生成产品界面或改写原生历史。
+会话消息保留原生 `turnId` 和毫秒 `timestamp`，内容数组中的所有请求、回复均按顺序展开；用户文字项还通过 contentParts 保留边界，展示层在项间插入 Markdown 分隔线，plain-text 预览保持原格式。服务提供 `contentItemKinds` 时，驱动校验数量和类型后按文本展平规则映射为 `contentPartKinds`，不推断缺失来源、不改变原文，由宿主决定上下文折叠。`branchName` 独立于会话标题，根分支使用 main。`HarnessConversation` 为历史和事件请求 `toolDetail: 'summary'`，工具仅保留名称、操作、首个非空命令行（最多 240 个字符）和目标路径，忽略工具输出增量；旧服务的详细工具数据也在驱动内转换为摘要。`loadEarlier` 合并稳定 ID 并拒绝循环游标，刷新和事件恢复保留已加载的早期页面。itookit 在历史顶部提供按需分页入口，点击才读取更早记录，保留加载进度及失败重试入口。总容量为 10,000 条/32 MiB，超过时明确失败并保留现有内容与游标，不静默裁剪。宿主按轮次把请求与该轮全部响应分别投影为一个 Markdown 编辑器。驱动不生成产品界面或改写原生历史。
 
 ## 独立开发与发布
 
@@ -94,6 +94,8 @@ itookit 内自动发现 `tools/pi-agent`。文件进程隔离测试还需 `PI_AG
 ## 只读状态与搜索
 
 `adapter.observeHarness(projects.harness(project, {readOnly: true}), false)` 创建共享 `HarnessStatusObserver`，poll 返回 profile/session 的 `HarnessObservation`；仅使用有界列表和事件，不读取每行历史、不 resume。execution、最近结果、连接、时效和控制能力分别返回。`close()` 释放底层客户端，关闭界面不停止原生 turn。
+
+目录监听故障只保留最近目录版本，不改变会话在线状态。各 profile 的观察错误独立隔离；状态解析、权限或超时错误以 `stale` 和 `refreshError: {stage, code}` 返回，连接失败证据或原生断开事件才标记 `offline`。成功的空事件响应也能恢复传输状态；原生进程断开仍需原生状态或权威快照确认恢复。错误期间不开放中断/响应控制；诊断只记录阶段、身份和安全错误码，并按阶段去重。
 
 服务描述 `fileSearch` 为 true 时可调用 `projects.search(project, {query, mode: 'path' | 'content'})`。profile.capabilities.search 为 true 时可调用 `harness.search(profileId, {query, mode: 'title' | 'content', archived})`。两者返回 matches/truncated/nextCursor；当前 nextCursor=null，超限明确部分结果。原生命中保留 sessionId/turnId/itemId；文件命中使用相对路径和行号。查询只读、默认字面匹配，调用方继续核验授权身份、取消及结果时效。
 
