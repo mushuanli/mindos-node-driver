@@ -4,7 +4,7 @@ import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import { MCPHarnessClient } from './harness/client';
 import { HarnessRpc } from './harness/rpc';
 import type { HarnessClient } from './harness/contracts';
-import { validateFileSearch, type FileSearchQuery, type FileSearchResult } from './search';
+import { validateFileSearch, validateSearchDirectory, type FileSearchQuery, type FileSearchResult } from './search';
 
 export interface ProjectMount { alias: string; path: string; at: string; access: 'ro' | 'rw' }
 export interface RemoteProject {
@@ -30,6 +30,12 @@ export interface ProjectClient {
 export class MCPProjectClient implements ProjectClient {
     constructor(private readonly rpc: HarnessRpc) {}
     async search(project: RemoteProject, query: FileSearchQuery, options?: OperationOptions) {
+        validateSearchDirectory(query.directory);
+        if (query.mode === 'name' || query.directory) {
+            const meta = await this.rpc.metadata?.(options);
+            const capabilities = (meta?.['itookit/pi-agent'] ?? meta?.['itookit/fs-agent']) as {fileSearchVersion?: number} | undefined;
+            if (typeof capabilities?.fileSearchVersion !== 'number' || !Number.isSafeInteger(capabilities.fileSearchVersion) || capabilities.fileSearchVersion < 2) throw new FSError('ECAPABILITY', 'Scoped file search requires a newer server');
+        }
         return validateFileSearch(await this.rpc.call('project_search', {projectId: project.id, revision: project.revision, ...query}, options));
     }
     async roots(options?: OperationOptions) {

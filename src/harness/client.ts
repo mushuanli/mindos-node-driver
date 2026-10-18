@@ -23,7 +23,9 @@ export class MCPHarnessClient implements HarnessClient {
         this.watchId = result.watchId;
         return result.version + (result.truncated ? ':partial:' + Math.floor(Date.now() / 30_000) : '');
     }
-    async search(profileId: string, query: {query: string; mode: 'title' | 'content'; archived?: boolean}, options?: OperationOptions) {
+    async search(profileId: string, query: {query: string; mode: 'title' | 'content' | 'prompt'; archived?: boolean}, options?: OperationOptions) {
+        if (query.mode === 'prompt' && !(await this.profiles(options)).profiles.find(profile => profile.id === profileId || profile.aliases?.includes(profileId))?.capabilities.searchPrompts)
+            throw new FSError('ECAPABILITY', 'Prompt search requires a newer server');
         const result = await this.rpc.call('harness_session_search', {...this.scope, profileId, ...query}, options) as import('./contracts').HarnessSearchResult;
         if (!result || !Array.isArray(result.matches) || result.matches.length > 100 || typeof result.truncated !== 'boolean' || result.nextCursor !== null)
             throw new FSError('EIO', 'Invalid harness search response');

@@ -1,6 +1,6 @@
 {
   "name": "@itookit/piagent-driver",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Platform-independent client for pi-agent: controlled files, projects, sync, processes and native AI harness sessions.",
   "type": "module",
   "main": "./src/index.ts",

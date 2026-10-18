@@ -97,7 +97,7 @@ itookit 内自动发现 `tools/pi-agent`。文件进程隔离测试还需 `PI_AG
 
 目录监听故障只保留最近目录版本，不改变会话在线状态。各 profile 的观察错误独立隔离；状态解析、权限或超时错误以 `stale` 和 `refreshError: {stage, code}` 返回，连接失败证据或原生断开事件才标记 `offline`。成功的空事件响应也能恢复传输状态；原生进程断开仍需原生状态或权威快照确认恢复。错误期间不开放中断/响应控制；诊断只记录阶段、身份和安全错误码，并按阶段去重。
 
-服务描述 `fileSearch` 为 true 时可调用 `projects.search(project, {query, mode: 'path' | 'content'})`。profile.capabilities.search 为 true 时可调用 `harness.search(profileId, {query, mode: 'title' | 'content', archived})`。两者返回 matches/truncated/nextCursor；当前 nextCursor=null，超限明确部分结果。原生命中保留 sessionId/turnId/itemId；文件命中使用相对路径和行号。查询只读、默认字面匹配，调用方继续核验授权身份、取消及结果时效。
+服务描述 `fileSearch` 为 true 时可调用 `projects.search(project, {query, mode: 'name' | 'path' | 'content', directory?})`。profile.capabilities.search 为 true 时可调用 `harness.search(profileId, {query, mode: 'title' | 'content' | 'prompt', archived})`。两者返回 matches/truncated/nextCursor；当前 nextCursor=null，超限明确部分结果。原生命中保留 sessionId/turnId/itemId；文件命中使用相对路径和行号。查询只读、默认字面匹配，调用方继续核验授权身份、取消及结果时效。
 
 
 ### 原生管理与附件
@@ -126,3 +126,5 @@ A connection can explicitly set `anonymous: true` to access public read-only exp
 Discovery exposes an optional `authorization` snapshot (`principalId`, `anonymous`, `revision`). Pass it on the connection to fence subsequent HTTP and MCP requests to the same identity and grant revision. Source pooling includes this snapshot and anonymous mode. A changed grant requires explicit discovery and refreshing the binding; it cannot silently reuse another user's view. The pure `@itookit/piagent-driver/authorization` entry validates snapshots without loading the MCP runtime.
 
 Projects expose optional effective capabilities for file reads/writes, execution and session control. A read-only file mount can permit native conversation control when the server grants execution separately. Servers without these fields retain the host's conservative legacy behavior. The driver implements transport and validation; directory ACL policy and user-to-credential binding belong to the server and host respectively.
+
+文件名与目录范围要求服务发现 `fileSearchVersion >= 2`；directory 为项目相对目录（不含前后斜线、`.`、`..`），搜索包含其子目录。driver 在旧服务上明确拒绝新范围，不接受被静默忽略的参数。仅用户提问要求 profile 的 `searchPrompts`；content 继续包括用户与助手正文，prompt 由服务端按原生消息角色和显式来源过滤。

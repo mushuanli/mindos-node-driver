@@ -5,7 +5,7 @@ export interface HarnessProfile {
     aliases?: string[];
     projectCapabilities?: import('../authorization').RemoteProjectCapabilities;
     id: string; kind: string; projectRuntime?: boolean; workspaces: Array<{ id: string }>;
-    capabilities: { usage?: boolean; history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; delete?: boolean; attachments?: Array<'text' | 'image'> };
+    capabilities: { usage?: boolean; history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; searchPrompts?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; delete?: boolean; attachments?: Array<'text' | 'image'> };
 }
 export interface HarnessSession {
     usage?: HarnessUsage; usageUnavailable?: boolean;
@@ -40,7 +40,7 @@ export interface HarnessClient {
     delete?(profileId: string, sessionId: string, options?: HarnessMutationOptions): Promise<{deletedSessionIds: string[]}>;
     rename?(profileId: string, sessionId: string, name: string, options?: HarnessMutationOptions): Promise<{session: HarnessSession}>;
     archive?(profileId: string, sessionId: string, archived: boolean, options?: HarnessMutationOptions): Promise<{session: HarnessSession}>;
-    search?(profileId: string, query: {query: string; mode: 'title' | 'content'; archived?: boolean}, options?: OperationOptions): Promise<HarnessSearchResult>;
+    search?(profileId: string, query: {query: string; mode: 'title' | 'content' | 'prompt'; archived?: boolean}, options?: OperationOptions): Promise<HarnessSearchResult>;
     profiles(options?: OperationOptions): Promise<{ epoch: string; profiles: HarnessProfile[] }>;
     list(profileId: string, query?: { cursor?: string; archived?: boolean }, options?: OperationOptions): Promise<HarnessPage>;
     read(profileId: string, sessionId: string, options?: HarnessHistoryOptions): Promise<HarnessHistory>;

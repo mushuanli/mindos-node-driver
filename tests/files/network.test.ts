@@ -80,7 +80,8 @@ access = "rw"
             await expect(running).rejects.toThrow();
             await execution.release();
         }
-        expect((await readdir(root)).filter(name => name.startsWith('.itookit-upload-'))).toEqual([]);
+        // The durable recovery journal survives successful writes; transient staging files must not.
+        expect((await readdir(root)).filter(name => name.startsWith('.itookit-upload-') && name !== '.itookit-upload-state')).toEqual([]);
         await vi.waitFor(() => expect(output).toContain('mutation.finished'));
         const events = output.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
         expect(events.some(event => event.event === 'mutation.accepted' && event.level === 'debug')).toBe(true);

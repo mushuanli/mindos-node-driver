@@ -1,7 +1,12 @@
 import { FSError } from '@itookit/vfs-core';
 export interface FileSearchMatch { path: string; line?: number; summary: string }
 export interface FileSearchResult { matches: FileSearchMatch[]; truncated: boolean; nextCursor: null }
-export interface FileSearchQuery { query: string; mode: 'path' | 'content' }
+export interface FileSearchQuery { query: string; mode: 'name' | 'path' | 'content'; directory?: string }
+export function validateSearchDirectory(directory: string | undefined): void {
+    if (directory !== undefined && (typeof directory !== 'string' || directory.length > 4096 || directory.includes('\0') || directory.includes('\\')
+        || directory !== '' && directory.split('/').some(part => !part || part === '.' || part === '..')))
+        throw new FSError('EINVAL', 'Invalid search directory');
+}
 export function validateFileSearch(value: unknown): FileSearchResult {
     const result = value as FileSearchResult | undefined;
     if (!result || !Array.isArray(result.matches) || result.matches.length > 100 || typeof result.truncated !== 'boolean' || result.nextCursor !== null)

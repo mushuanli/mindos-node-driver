@@ -67,6 +67,7 @@ it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio har
         expect((await client.list('codex')).sessions).toHaveLength(1);
         expect((await client.search('codex', {query: 'history', mode: 'title'})).matches).toMatchObject([{sessionId: session.id, title: '<script>history</script>'}]);
         expect((await client.search('codex', {query: 'absent', mode: 'content'})).matches).toEqual([]);
+        expect((await client.search('codex', {query: 'absent', mode: 'prompt'})).matches).toEqual([]);
         expect((await client.read('codex',session.id)).turns).toEqual([]);
         expect((await client.read('codex',session.id,{toolDetail:'summary'})).turns).toEqual([]);
         await client.resume('codex',session.id);
