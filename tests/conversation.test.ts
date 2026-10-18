@@ -400,3 +400,14 @@ it('retains input and never starts a turn when another native writer prevents re
     expect(view.snapshot()).toMatchObject({pending: false, draft: 'keep input', submittedTurnId: undefined});
     expect(client.turn).not.toHaveBeenCalled(); await view.close();
 });
+
+it.each(['missing', 'throws'])('creates and sends a native conversation through internal request IDs when UUID %s', async mode => {
+    const original = globalThis.crypto;
+    vi.stubGlobal('crypto', {getRandomValues: original.getRandomValues.bind(original),
+        ...(mode === 'throws' ? {randomUUID: () => {throw new Error('Native UUID unavailable');}} : {})});
+    const client = peer(), view = new HarnessConversation(client, profile, 'p');
+    try {
+        await view.send('Compatible native send'); expect(client.create).toHaveBeenCalledOnce(); expect(client.turn).toHaveBeenCalledOnce();
+        expect(vi.mocked(client.create).mock.calls[0][2]?.requestId).toMatch(/^[\da-f]{8}-[\da-f-]{27}$/i);
+    } finally {await view.close(); vi.unstubAllGlobals();}
+});

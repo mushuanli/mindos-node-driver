@@ -117,3 +117,16 @@ it('observes project directories only when discovered, validates responses and r
     const old = new MCPHarnessClient({call, close}, {projectId: 'p', revision: 2});
     expect(await old.directoryVersion()).toBeUndefined(); expect(call).toHaveBeenCalledTimes(4);
 });
+
+it.each(['missing', 'throws'])('uses the internal mutation ID generator when native UUID %s', async mode => {
+    const original = globalThis.crypto;
+    vi.stubGlobal('crypto', {getRandomValues: original.getRandomValues.bind(original),
+        ...(mode === 'throws' ? {randomUUID: () => {throw new Error('Native UUID unavailable');}} : {})});
+    const call = vi.fn(async (name: string, args: Record<string, unknown>) => name === 'harness_profiles' ? {epoch: 'e', profiles: []}
+        : {outcome: 'committed', requestId: args.requestId, result: {session}});
+    const client = new MCPHarnessClient({call, close: vi.fn()});
+    try {
+        await client.create('codex', 'project');
+        expect(call).toHaveBeenCalledWith('harness_create', expect.objectContaining({requestId: expect.stringMatching(/^[\da-f]{8}-[\da-f-]{27}$/i)}), undefined);
+    } finally {await client.close(); vi.unstubAllGlobals();}
+});

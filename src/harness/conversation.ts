@@ -1,3 +1,4 @@
+import { requestId as createRequestId } from '../files/request-id';
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessProfile, HarnessSession, HarnessEvents, HarnessAttachment } from './contracts';
 import { conversationBranches } from './branches';
@@ -94,7 +95,7 @@ export class HarnessConversation implements HarnessConversationPort {
     }
     private async native<T>(operation: string, call: (options: import('./contracts').HarnessMutationOptions) => Promise<T>): Promise<T> {
         const epoch = this.journal?.epoch ?? (await this.client.profiles(this.options())).epoch;
-        this.pending = {requestId: globalThis.crypto.randomUUID(), epoch, operation};
+        this.pending = {requestId: createRequestId(), epoch, operation};
         try {
             try { await this.save(); } catch (error) { this.pending = undefined; throw error; }
             const result = await call({...this.options(), ...this.pending});

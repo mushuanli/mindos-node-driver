@@ -1,3 +1,4 @@
+import { requestId as createRequestId } from '../files/request-id';
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessMutationOptions, HarnessEvents, HarnessHistory, HarnessPage, HarnessReceipt, HarnessSession, HarnessHistoryOptions, HarnessEventsOptions } from './contracts';
 import { HarnessRpc } from './rpc';
@@ -106,7 +107,7 @@ export class MCPHarnessClient implements HarnessClient {
     }
     private async mutate(name: string, args: object, options?: HarnessMutationOptions, decode = (value: unknown): unknown => value): Promise<unknown> {
         if (!this.epoch) await this.profiles(options);
-        const requestId = options?.requestId ?? globalThis.crypto.randomUUID();
+        const requestId = options?.requestId ?? createRequestId();
         try {
             const receipt = validateReceipt(await this.rpc.call(name, { ...args, ...this.scope, epoch: options?.epoch ?? this.epoch, requestId }, options));
             if (receipt.requestId !== requestId) throw new FSError('EIO', 'Mismatched harness receipt');
