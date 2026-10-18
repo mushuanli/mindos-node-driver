@@ -11,3 +11,7 @@ export type { HarnessSearchMatch, HarnessSearchResult } from './contracts';
 export type { HarnessAttachment, HarnessTurnOptions } from './contracts';
 
 export type { HarnessUsage, HarnessUsageEntry, HarnessTokens } from './usage';
+
+export type { HarnessSlashCommand, HarnessCommandResult } from './contracts';
+
+export type {HarnessModel, HarnessModelCatalog, HarnessModelSelection, HarnessCommandOptions} from './contracts';

@@ -5,7 +5,7 @@ export interface HarnessProfile {
     aliases?: string[];
     projectCapabilities?: import('../authorization').RemoteProjectCapabilities;
     id: string; kind: string; projectRuntime?: boolean; workspaces: Array<{ id: string }>;
-    capabilities: { usage?: boolean; history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; searchPrompts?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; delete?: boolean; attachments?: Array<'text' | 'image'> };
+    capabilities: { models?: boolean; slashCommands?: boolean; usage?: boolean; history: boolean; create: boolean; resume: boolean; interrupt: boolean; interactions: boolean; fork?: boolean; search?: boolean; searchPrompts?: boolean; rename?: boolean; archive?: boolean; unarchive?: boolean; delete?: boolean; attachments?: Array<'text' | 'image'> };
 }
 export interface HarnessSession {
     usage?: HarnessUsage; usageUnavailable?: boolean;
@@ -33,8 +33,17 @@ export interface HarnessHistoryOptions extends HarnessEventsOptions { cursor?: s
 export interface HarnessReceipt { requestId: string; outcome: 'committed' | 'not-committed' | 'unknown'; result?: unknown; code?: string }
 export interface HarnessMutationOptions extends OperationOptions { requestId?: string; epoch?: string }
 export interface HarnessAttachment {kind: 'text' | 'image'; name: string; content: string; mimeType?: string}
-export interface HarnessTurnOptions extends HarnessMutationOptions {attachments?: HarnessAttachment[]}
+export interface HarnessCommandOptions extends HarnessMutationOptions {selection?: HarnessModelSelection}
+export interface HarnessTurnOptions extends HarnessMutationOptions {attachments?: HarnessAttachment[]; selection?: HarnessModelSelection}
+export interface HarnessSlashCommand { name: string; description: string; argumentHint?: string; kind: 'prompt' | 'action'; disabled?: boolean }
+export interface HarnessCommandResult { turnId?: string; commandId?: string; output?: string; failed?: boolean }
+export interface HarnessModelSelection {modelId: string; reasoningEffort?: string}
+export interface HarnessModel {id: string; label: string; reasoningEfforts: Array<{id: string; label: string}>; defaultReasoningEffort?: string}
+export interface HarnessModelCatalog {models: HarnessModel[]; current?: HarnessModelSelection; default?: HarnessModelSelection}
 export interface HarnessClient {
+    models?(profileId: string, sessionId?: string, options?: OperationOptions): Promise<HarnessModelCatalog>;
+    commands?(profileId: string, sessionId?: string, options?: OperationOptions): Promise<HarnessSlashCommand[]>;
+    command?(profileId: string, sessionId: string, command: string, args: string, options?: HarnessCommandOptions): Promise<HarnessCommandResult>;
     usage?(profileId: string, sessionId: string, options?: OperationOptions): Promise<HarnessUsage>;
     directoryVersion?(options?: import('@itookit/vfs-core').OperationOptions): Promise<string | undefined>;
     delete?(profileId: string, sessionId: string, options?: HarnessMutationOptions): Promise<{deletedSessionIds: string[]}>;

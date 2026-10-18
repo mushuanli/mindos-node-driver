@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import {validateCommands} from '../src/harness/commands';
 import { MCPHarnessClient } from '../src/harness/client';
 import { createPiAgentDriver } from '../src/provider';
 import { validateEvents, validateHistory, validatePage, validateProfiles, validateSession } from '../src/harness/validation';
@@ -129,4 +130,18 @@ it.each(['missing', 'throws'])('uses the internal mutation ID generator when nat
         await client.create('codex', 'project');
         expect(call).toHaveBeenCalledWith('harness_create', expect.objectContaining({requestId: expect.stringMatching(/^[\da-f]{8}-[\da-f-]{27}$/i)}), undefined);
     } finally {await client.close(); vi.unstubAllGlobals();}
+});
+it('validates native catalogs and carries project scope plus stable command receipts', async () => {
+    const commands = [{name: 'team:verify', description: 'Verify', argumentHint: '[path]', kind: 'prompt'}];
+    const call = vi.fn(async (name: string, args: any) => name === 'harness_commands' ? {commands}
+        : name === 'harness_profiles' ? {epoch: 'e', profiles: []}
+        : {requestId: args.requestId, outcome: 'committed', result: {commandId: 'native', output: 'Done'}});
+    const client = new MCPHarnessClient({call, close: vi.fn()}, {projectId: 'p', revision: 3});
+    expect(await client.commands('claude', 's')).toEqual(commands);
+    await client.command('claude', 's', 'team:verify', 'src', {requestId: 'once'});
+    expect(call).toHaveBeenCalledWith('harness_commands', {profileId: 'claude', sessionId: 's', projectId: 'p', revision: 3}, undefined);
+    expect(call).toHaveBeenCalledWith('harness_command', {profileId: 'claude', sessionId: 's', projectId: 'p', revision: 3,
+        epoch: 'e', requestId: 'once', command: 'team:verify', arguments: 'src'}, {requestId: 'once'});
+    for (const rows of [[...commands, ...commands], [{...commands[0], name: 'wrong name'}], [{...commands[0], kind: 'shell'}]])
+        expect(() => validateCommands({commands: rows})).toThrow();
 });

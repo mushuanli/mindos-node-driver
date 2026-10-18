@@ -128,3 +128,19 @@ Discovery exposes an optional `authorization` snapshot (`principalId`, `anonymou
 Projects expose optional effective capabilities for file reads/writes, execution and session control. A read-only file mount can permit native conversation control when the server grants execution separately. Servers without these fields retain the host's conservative legacy behavior. The driver implements transport and validation; directory ACL policy and user-to-credential binding belong to the server and host respectively.
 
 文件名与目录范围要求服务发现 `fileSearchVersion >= 2`；directory 为项目相对目录（不含前后斜线、`.`、`..`），搜索包含其子目录。driver 在旧服务上明确拒绝新范围，不接受被静默忽略的参数。仅用户提问要求 profile 的 `searchPrompts`；content 继续包括用户与助手正文，prompt 由服务端按原生消息角色和显式来源过滤。
+
+## Native command catalogs
+
+Profiles may advertise `capabilities.slashCommands`. `HarnessClient.commands(profileId, sessionId)` reads that harness session's catalog; `command(profileId, sessionId, name, args, options)` uses the existing epoch/requestId mutation receipts. `HarnessConversation.commands()` and `command(name, args)` expose the same capability to hosts. A command can complete without creating a model turn; DSH results become native system records, and ordinary send remains separate.
+
+Commands require an initialized native session. Catalogs are bounded and validated, and no client-side harness-name switch guesses available commands. Without the capability, older nodes receive no new catalog request. Unknown commands never trigger an automatic model fallback. Unknown command receipts persist across reopening; accepting the original command preserves newer draft text and attachments.
+
+
+## Native model selection
+
+Profiles opt in with `capabilities.models`. `HarnessClient.models(profileId, sessionId?)` returns a bounded, validated `HarnessModelCatalog`: opaque IDs, display labels, per-model reasoning options, and optional default/current selections. `HarnessConversation.models()` returns an empty catalog for older nodes without issuing a new RPC. No model list or reasoning enum is hardcoded in the client.
+
+`HarnessConversation.send(text, attachments?, selection?)` and `HarnessClient.turn(..., {selection})` capture `{modelId, reasoningEffort?}` for that submission. Invalid combinations fail before admission; model discovery is read-only and does not grant session control. The native adapter repeats validation. Prompt-kind commands accept the same selection through `command(name, args, selection)`; action commands retain native semantics. Lost mutation responses keep the existing receipt/reconciliation behavior and never trigger automatic replays.
+
+
+`HarnessConversation.command(name, args?, selection?, inputText?)` preserves the original composer text separately from parsed arguments. Prompt commands lazily prepare a session through the same path as messages; session actions are disabled until a native session exists. Recovery captures the draft revision and original text, so confirmed receipts cannot erase later edits, including edits restored to identical text. Recent command results (up to 64, each output limited to 128 Ki characters) survive refresh and reopening; authoritative native records with the same command ID replace their local presentation. A failed command handler can still have a committed receipt and must not be replayed.

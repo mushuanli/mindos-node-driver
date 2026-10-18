@@ -3,10 +3,21 @@ import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessMutationOptions, HarnessEvents, HarnessHistory, HarnessPage, HarnessReceipt, HarnessSession, HarnessHistoryOptions, HarnessEventsOptions } from './contracts';
 import { HarnessRpc } from './rpc';
 import { validateUsage } from './usage';
+import {validateModels, validateModelSelection} from './models';
+import {validateCommands, validateCommandResult} from './commands';
 import { validateDeletedSessionIds, validateEvents, validateHistory, validatePage, validateProfiles, validateReceipt, validateSession } from './validation';
 
 /** Native task ownership lives on the gateway; this client never replays a mutation. */
 export class MCPHarnessClient implements HarnessClient {
+    async models(profileId: string, sessionId?: string, options?: OperationOptions) {
+        return validateModels(await this.rpc.call('harness_models', {...this.scope, profileId, ...(sessionId ? {sessionId} : {})}, options));
+    }
+    async commands(profileId: string, sessionId?: string, options?: OperationOptions) {
+        return validateCommands(await this.rpc.call('harness_commands', {...this.scope, profileId, ...(sessionId ? {sessionId} : {})}, options));
+    }
+    async command(profileId: string, sessionId: string, command: string, args: string, options?: import('./contracts').HarnessCommandOptions) {
+        return await this.mutate('harness_command', {profileId, sessionId, command, arguments: args, ...(options?.selection ? {selection: validateModelSelection(options.selection)} : {})}, options, validateCommandResult) as import('./contracts').HarnessCommandResult;
+    }
     private epoch?: string;
     private watchId?: string;
     private filesEnabled?: boolean;
@@ -84,7 +95,7 @@ export class MCPHarnessClient implements HarnessClient {
         }) as { session: HarnessSession };
     }
     async turn(profileId: string, sessionId: string, prompt: string, options?: import('./contracts').HarnessTurnOptions) {
-        return await this.mutate('harness_turn', { profileId, sessionId, prompt, ...(options?.attachments?.length ? {attachments: options.attachments} : {}) }, options, value => {
+        return await this.mutate('harness_turn', { profileId, sessionId, prompt, ...(options?.selection ? {selection: validateModelSelection(options.selection)} : {}), ...(options?.attachments?.length ? {attachments: options.attachments} : {}) }, options, value => {
             const result = value as { turnId?: unknown };
             if (typeof result?.turnId !== 'string' || !result.turnId) throw new FSError('EIO', 'Invalid harness turn');
             return { turnId: result.turnId };

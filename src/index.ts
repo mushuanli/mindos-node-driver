@@ -25,3 +25,7 @@ export { conversationBranches } from './harness/branches';
 export type { HarnessAttachment, HarnessTurnOptions } from './harness/contracts';
 
 export type { HarnessUsage, HarnessUsageEntry, HarnessTokens } from './harness/usage';
+
+export type { HarnessSlashCommand, HarnessCommandResult } from './harness/contracts';
+
+export type {HarnessModel, HarnessModelCatalog, HarnessModelSelection, HarnessCommandOptions} from './harness/contracts';

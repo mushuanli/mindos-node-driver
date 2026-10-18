@@ -1,3 +1,6 @@
+import {validateModels, validateModelSelection, validateAvailableSelection} from './models';
+import type {HarnessCommandResult, HarnessModelCatalog, HarnessModelSelection} from './contracts';
+import {validateCommands, validateCommandResult, validateCommandReceipts} from './commands';
 import { requestId as createRequestId } from '../files/request-id';
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessProfile, HarnessSession, HarnessEvents, HarnessAttachment } from './contracts';
@@ -10,13 +13,48 @@ import { mergeMessages, historyMessages, nativeMessage, nativeRequest, type Harn
 
 /** One native conversation; closing a viewer never interrupts its remote turn. */
 export class HarnessConversation implements HarnessConversationPort {
+    async models(): Promise<HarnessModelCatalog> {
+        if (!this.profile.capabilities.models || !this.client.models) return {models: []};
+        return validateModels(await this.client.models(this.profile.id, this.session?.id, this.options()));
+    }
+    private nativeCommands: import('./contracts').HarnessSlashCommand[] = [];
+    async commands() {
+        if (!this.profile.capabilities.slashCommands || !this.client.commands) return [];
+        this.nativeCommands = await this.client.commands(this.profile.id, this.session?.id, this.options());
+        return this.availableCommands();
+    }
+    private availableCommands() {
+        return this.nativeCommands.map(command => ({...command, ...(!this.session && command.kind === 'action' ? {disabled: true} : {})}));
+    }
+    async command(name: string, args = '', selection?: HarnessModelSelection, inputText?: string) {
+        const requested = selection ? validateModelSelection(selection) : undefined;
+        if (!this.loaded) await this.read();
+        if (!this.snapshot().canSend || !this.client.command) throw new FSError('ECAPABILITY', 'Native command unavailable');
+        const command = (await this.commands()).find(row => row.name === name);
+        const canonical = `/${name}${args ? ' ' + args : ''}`;
+        const text = inputText ?? (this.draft.trim() === canonical.trim() ? this.draft : canonical);
+        if (!this.snapshot().canSend || !command || command.disabled || args.length > 128 * 1024 || text.length > 1024 * 1024) throw new FSError('EINVAL', 'Unknown native command');
+        if (!this.session && command.kind !== 'prompt') throw new FSError('ECAPABILITY', 'Native command requires a session');
+        const selected = requested && command.kind === 'prompt' ? validateAvailableSelection(requested, await this.models()) : undefined;
+        if (!this.snapshot().canSend) throw new FSError('EBUSY', 'Native command unavailable');
+        if (!this.draft) this.setDraft(text, []);
+        const submission = {inputText: text, draftRevision: this.draftRevision};
+        this.submittedTurnId = undefined;
+        return this.mutate(async () => {
+            await this.prepareSession();
+            await this.native('command', options => this.client.command!(this.profile.id, this.session!.id, name, args,
+                {...options, ...(selected ? {selection: selected} : {})}), submission, result => this.acceptCommand(result, text));
+        }).then(() => this.refreshSubmitted());
+    }
     private session?: HarnessSession;
     private messages: HarnessMessage[] = [];
     private requests: HarnessRequest[] = [];
     private cursor?: {after: number; eventEpoch: string};
     private readonly completed = new Set<string>();
     private readonly completedItems = new Set<string>();
-    private pending?: {requestId: string; epoch: string; operation: string};
+    private pending?: import('./conversation-journal').HarnessRecovery['pending'];
+    private draftRevision = 0;
+    private commandResults: HarnessCommandResult[] = [];
     private deletedSessionIds: string[] = [];
     private loaded = false;
     private earlier?: string;
@@ -56,7 +94,7 @@ export class HarnessConversation implements HarnessConversationPort {
         const manageable = !this.deletedSessionIds.length && this.loaded && !!this.session && !this.lifetime.signal.aborted && available && this.writable && !this.busy && !this.pending;
         observation.canInterrupt = controllable && !!this.session?.activeTurnId && this.profile.capabilities.interrupt;
         observation.canRespond = controllable && !!this.requests.length && this.profile.capabilities.interactions;
-        return {usage: this.session?.usage, usageUnavailable: this.session?.usageUnavailable, observation, submittedTurnId: this.submittedTurnId, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
+        return {...(this.profile.capabilities.models ? {supportsModels: true} : {}), ...(this.profile.capabilities.slashCommands ? {supportsSlashCommands: true} : {}), ...(this.nativeCommands.length ? {slashCommands: this.availableCommands()} : {}), usage: this.session?.usage, usageUnavailable: this.session?.usageUnavailable, observation, submittedTurnId: this.submittedTurnId, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
             attachments: this.writable ? this.profile.capabilities.attachments : undefined,
             deletedSessionIds: this.deletedSessionIds.slice(),
             canDelete: manageable && !!this.client.delete && !!this.profile.capabilities.delete
@@ -67,7 +105,7 @@ export class HarnessConversation implements HarnessConversationPort {
             canUnarchive: manageable && !!this.session?.archived && !!this.client.archive && !!this.profile.capabilities.unarchive,
             createdAt: this.session?.createdAt, updatedAt: this.session?.updatedAt,
             branchName: this.session?.branchName ?? (this.session?.parentSessionId ? undefined : 'main'),
-            messages: this.messages.map(m => ({...m})), requests: this.requests.map(r => ({...r})),
+            messages: mergeMessages(this.messages, this.commandMessages()).map(m => ({...m})), requests: this.requests.map(r => ({...r})),
             hasEarlier: !!this.earlier,
             canFork: !this.deletedSessionIds.length && !this.session?.archived && !this.lifetime.signal.aborted && this.loaded && this.writable && !this.busy && !active && !this.pending && !this.disconnected && !this.nativeDisconnected && !this.refreshError && !this.navigationSessionId && !!this.session && this.messages.some(message => message.role === 'user' || message.role === 'assistant') && !!this.client.fork && !!this.profile.capabilities.fork && this.session.forkable !== false,
             canSend: !this.deletedSessionIds.length && !this.session?.archived && !this.navigationSessionId && this.loaded && !this.lifetime.signal.aborted && this.writable && !this.busy && !active && !this.pending && !this.disconnected && !this.nativeDisconnected && !this.refreshError && (this.session ? this.session.resumable && (this.session.owned || this.profile.capabilities.resume) : this.profile.capabilities.create),
@@ -81,27 +119,67 @@ export class HarnessConversation implements HarnessConversationPort {
         if (record?.sessionId && !this.session) this.session = {id: record.sessionId, title: record.sessionId, cwd: null, status: null, updatedAt: null, resumable: false};
         this.deletedSessionIds = record?.deletedSessionIds ?? [];
         this.pending = record?.pending; this.draft = record?.draft ?? '';
+        this.draftRevision = record?.draftRevision ?? 0;
+        this.commandResults = validateCommandReceipts(record?.commandResults);
         this.draftAttachments = validateAttachments(record?.draftAttachments); this.loaded = true;
     }
     private save(sessionId = this.session?.id): Promise<void> {
-        const record = {sessionId, deletedSessionIds: this.deletedSessionIds, pending: this.pending, draft: this.draft, draftAttachments: this.draftAttachments};
+        const record = {sessionId, deletedSessionIds: this.deletedSessionIds, pending: this.pending, draft: this.draft,
+            draftAttachments: this.draftAttachments, draftRevision: this.draftRevision, commandResults: this.commandResults};
         const write = this.writes.then(() => this.journal?.save(record));
         this.writes = write.catch(() => {}); return write;
     }
     async saveDraft(text: string, attachments: HarnessAttachment[] = []) {
         await this.restore();
         if (text.length > 1024 * 1024) throw new FSError('EFBIG', 'Remote input draft too large');
-        this.draftAttachments = validateAttachments(attachments); this.draft = text; await this.save();
+        this.setDraft(text, validateAttachments(attachments)); await this.save();
     }
-    private async native<T>(operation: string, call: (options: import('./contracts').HarnessMutationOptions) => Promise<T>): Promise<T> {
+    private setDraft(text: string, attachments: HarnessAttachment[]): void {
+        if (text !== this.draft || JSON.stringify(attachments) !== JSON.stringify(this.draftAttachments)) ++this.draftRevision;
+        this.draft = text; this.draftAttachments = attachments;
+    }
+    private acceptDraft(submission: {inputText?: string; draftRevision?: number}): void {
+        if (submission.draftRevision !== undefined && submission.draftRevision !== this.draftRevision) return;
+        if (submission.inputText !== undefined && submission.inputText !== this.draft) return;
+        this.setDraft('', []);
+    }
+    private async prepareSession(): Promise<void> {
+        if (!this.session) this.session = (await this.native('create', options => this.client.create(this.profile.id, this.workspaceId, options))).session;
+        if (!this.session.owned) this.session = (await this.native('resume', options => this.client.resume(this.profile.id, this.session!.id, options))).session;
+    }
+    private async refreshSubmitted(): Promise<HarnessConversationSnapshot> {
+        try {return await this.read();}
+        catch (error) {
+            this.disconnected = connectionLost(error);
+            this.refreshError = this.errors.record('history', error);
+            return this.snapshot();
+        }
+    }
+    private acceptCommand(value: unknown, inputText: string): void {
+        const result = validateCommandResult(value);
+        this.submittedTurnId = result.turnId;
+        if (result.commandId) {
+            const record = {commandId: result.commandId, output: result.output ?? inputText, failed: result.failed};
+            this.commandResults = [...this.commandResults.filter(row => row.commandId !== result.commandId), record].slice(-64);
+        }
+        if (result.turnId && !this.completed.has(result.turnId)) {this.session!.activeTurnId = result.turnId; this.session!.status = 'active';}
+    }
+    private commandMessages(): HarnessMessage[] {
+        const nativeIds = new Set(this.messages.map(message => message.id));
+        return this.commandResults.filter(row => row.commandId && !nativeIds.has(`command:${row.commandId}`)).map(row => ({
+            id: `command:${row.commandId}`, role: 'system', text: row.output ?? '', status: row.failed ? 'failed' : 'completed'}));
+    }
+    private async native<T>(operation: string, call: (options: import('./contracts').HarnessMutationOptions) => Promise<T>,
+        submission?: {inputText: string; draftRevision: number}, committed?: (result: T) => void): Promise<T> {
         const epoch = this.journal?.epoch ?? (await this.client.profiles(this.options())).epoch;
-        this.pending = {requestId: createRequestId(), epoch, operation};
+        this.pending = {requestId: createRequestId(), epoch, operation, ...submission};
         try {
             try { await this.save(); } catch (error) { this.pending = undefined; throw error; }
             const result = await call({...this.options(), ...this.pending});
             const session = (result as {session?: HarnessSession} | undefined)?.session;
             if (operation === 'delete') this.deletedSessionIds = (result as {deletedSessionIds: string[]}).deletedSessionIds;
-            if (operation === 'turn') { this.draft = ''; this.draftAttachments = []; }
+            committed?.(result);
+            if (operation === 'turn' || operation === 'command' && !this.draftAttachments.length) this.acceptDraft(this.pending);
             const pending = this.pending; this.pending = undefined;
             try { await this.save(session?.id ?? this.session?.id); } catch (error) { this.pending = pending; throw error; }
             return result;
@@ -190,6 +268,7 @@ export class HarnessConversation implements HarnessConversationPort {
         if (this.requests.length) { this.observedAt = Date.now(); this.source = 'events'; }
     }
     private consumeEvent(method: string, params: Record<string, unknown>, at?: number) {
+        if (method === 'harness/commands/updated') this.nativeCommands = validateCommands({commands: params.commands});
         const prior = this.session!;
         this.session = applyHarnessStatus(prior, {method, params});
         if (this.session !== prior) {
@@ -218,29 +297,26 @@ export class HarnessConversation implements HarnessConversationPort {
     private replace(message: HarnessMessage) {
         this.messages = mergeMessages(this.messages, [message]);
     }
-    async send(text: string, attachments?: HarnessAttachment[]) {
+    async send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection) {
+        const requested = selection ? validateModelSelection(selection) : undefined;
         if (!this.loaded) await this.read();
         if (!text.trim() || !this.snapshot().canSend) throw new FSError('EBUSY', 'Conversation cannot send');
         if (attachments?.some(file => !this.profile.capabilities.attachments?.includes(file.kind))) throw new FSError('ECAPABILITY', 'Attachment kind unavailable');
         const prepared = validateAttachments(attachments);
+        const selected = requested ? validateAvailableSelection(requested, await this.models()) : undefined;
+        if (!this.snapshot().canSend) throw new FSError('EBUSY', 'Conversation cannot send');
         this.submittedTurnId = undefined;
-        this.draftAttachments = prepared; this.draft = text;
+        this.setDraft(text, prepared);
+        const submission = {inputText: text, draftRevision: this.draftRevision};
         return this.mutate(async () => {
-            if (!this.session) this.session = (await this.native('create', options => this.client.create(this.profile.id, this.workspaceId, options))).session;
-            if (!this.session.owned) this.session = (await this.native('resume', options => this.client.resume(this.profile.id, this.session!.id, options))).session;
-            const {turnId} = await this.native('turn', options => this.client.turn(this.profile.id, this.session!.id, text, {...options, ...(prepared.length ? {attachments: prepared} : {})}));
-            this.submittedTurnId = turnId;
-            if (!this.completed.has(turnId)) { this.session.activeTurnId = turnId; this.session.status = 'active'; }
-            this.replace({id: `submitted:${turnId}`, role: 'user', text, turnId, timestamp: Date.now()});
-        }).then(async () => {
-            this.draft = ''; this.draftAttachments = [];
-            try { await this.save(); } catch { /* The native turn was committed; never resend it. */ }
-            try { return await this.read(); } catch (error) {
-                this.disconnected = connectionLost(error);
-                this.refreshError = this.errors.record('history', error);
-                return this.snapshot();
-            }
-        });
+            await this.prepareSession();
+            await this.native('turn', options => this.client.turn(this.profile.id, this.session!.id, text,
+                {...options, ...(selected ? {selection: selected} : {}), ...(prepared.length ? {attachments: prepared} : {})}), submission, ({turnId}) => {
+                this.submittedTurnId = turnId;
+                if (!this.completed.has(turnId)) { this.session!.activeTurnId = turnId; this.session!.status = 'active'; }
+                this.replace({id: `submitted:${turnId}`, role: 'user', text, turnId, timestamp: Date.now()});
+            });
+        }).then(() => this.refreshSubmitted());
     }
     async interrupt() {
         if (!this.snapshot().canInterrupt) throw new FSError('EACCES', 'Conversation cannot interrupt');
@@ -265,7 +341,7 @@ export class HarnessConversation implements HarnessConversationPort {
         return this.mutate(async () => {
             const result = await this.native('delete', options => this.client.delete!(this.profile.id, this.session!.id, options));
             this.deletedSessionIds = result.deletedSessionIds; this.messages = []; this.requests = [];
-            this.draft = ''; this.draftAttachments = []; await this.save();
+            this.commandResults = []; this.setDraft('', []); await this.save();
         });
     }
     async respond(id: string | number, response: Record<string, unknown>) {
@@ -286,13 +362,18 @@ export class HarnessConversation implements HarnessConversationPort {
         if (receipt.outcome === 'committed') {
             if (['create', 'resume', 'rename', 'archive', 'unarchive'].includes(this.pending.operation)) this.session = validateSession(result?.session);
             if (this.pending.operation === 'delete') {
-                this.deletedSessionIds = validateDeletedSessionIds(result?.deletedSessionIds, this.session!.id); this.messages = []; this.requests = []; this.draft = ''; this.draftAttachments = [];
+                this.deletedSessionIds = validateDeletedSessionIds(result?.deletedSessionIds, this.session!.id); this.messages = []; this.requests = [];
+                this.commandResults = []; this.setDraft('', []);
             }
             if (this.pending.operation === 'fork') this.navigationSessionId = validateSession(result?.session).id;
+            if (this.pending.operation === 'command') {
+                this.acceptCommand(result, this.pending.inputText ?? '');
+                if (!this.draftAttachments.length) this.acceptDraft(this.pending);
+            }
             if (this.pending.operation === 'turn') {
                 if (typeof result?.turnId !== 'string') throw new FSError('EIO', 'Invalid turn receipt');
                 this.submittedTurnId = result.turnId;
-                this.draft = ''; this.draftAttachments = [];
+                this.acceptDraft(this.pending);
             }
         }
         const pending = this.pending; this.pending = undefined;
@@ -309,6 +390,8 @@ export class HarnessConversation implements HarnessConversationPort {
 export type HarnessConversationSnapshot = ReturnType<HarnessConversation['snapshot']>;
 export interface HarnessConversationPort {
     readonly kind: string;
+    commands?(): Promise<import('./contracts').HarnessSlashCommand[]>;
+    command?(name: string, args?: string, selection?: HarnessModelSelection, inputText?: string): Promise<HarnessConversationSnapshot>;
     snapshot(): HarnessConversationSnapshot;
     delete?(): Promise<HarnessConversationSnapshot>;
     rename?(name: string): Promise<HarnessConversationSnapshot>;
@@ -319,7 +402,8 @@ export interface HarnessConversationPort {
     saveDraft(text: string, attachments?: HarnessAttachment[]): Promise<void>;
     read(): Promise<HarnessConversationSnapshot>;
     poll(): Promise<HarnessConversationSnapshot>;
-    send(text: string, attachments?: HarnessAttachment[]): Promise<HarnessConversationSnapshot>;
+    models?(): Promise<HarnessModelCatalog>;
+    send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection): Promise<HarnessConversationSnapshot>;
     interrupt(): Promise<HarnessConversationSnapshot>;
     respond(id: string | number, response: Record<string, unknown>): Promise<HarnessConversationSnapshot>;
     reconcile(): Promise<HarnessConversationSnapshot>;

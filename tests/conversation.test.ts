@@ -6,12 +6,131 @@ import { historyMessages, mergeMessages } from '../src/harness/conversation-mode
 import { toolSummary } from '../src/harness/tool-summary';
 const profile: HarnessProfile = {id:'codex', kind:'codex', projectRuntime:true, workspaces:[{id:'p'}], capabilities:{history:true,create:true,resume:true,interrupt:true,interactions:true}};
 const session = {id:'s', title:'Title', cwd:'/projects/p', status:'idle', updatedAt:1, resumable:true, owned:true};
+
+it('validates model-specific reasoning before admission and leaves unsupported nodes unchanged', async () => {
+    const client = peer();
+    client.models = vi.fn(async () => ({models: [{id: 'native', label: 'Native', reasoningEfforts: [{id: 'high', label: 'High'}]}]}));
+    const view = new HarnessConversation(client, {...profile, capabilities: {...profile.capabilities, models: true}}, 'p', 's');
+    await view.read();
+    await expect(view.send('Prompt', [], {modelId: 'native', reasoningEffort: 'invalid'})).rejects.toThrow();
+    expect(client.turn).not.toHaveBeenCalled();
+    await view.send('Prompt', [], {modelId: 'native', reasoningEffort: 'high'});
+    expect(client.turn).toHaveBeenCalledWith('codex', 's', 'Prompt', expect.objectContaining({selection: {modelId: 'native', reasoningEffort: 'high'}}));
+    await view.close();
+    vi.mocked(client.models).mockClear();
+    const legacy = new HarnessConversation(client, profile, 'p', 's');
+    expect(await legacy.models()).toEqual({models: []}); expect(client.models).not.toHaveBeenCalled();
+    await legacy.close();
+});
+
+it('captures the model selection before asynchronous discovery can observe later edits', async () => {
+    const client = peer();
+    let finish!: (catalog: import('../src/harness/contracts').HarnessModelCatalog) => void;
+    client.models = vi.fn(() => new Promise(resolve => {finish = resolve;}));
+    const view = new HarnessConversation(client, {...profile, capabilities: {...profile.capabilities, models: true}}, 'p', 's');
+    await view.read();
+    const selected = {modelId: 'native', reasoningEffort: 'high'};
+    const sending = view.send('Prompt', [], selected);
+    selected.modelId = 'changed'; selected.reasoningEffort = 'invalid';
+    finish({models: [{id: 'native', label: 'Native', reasoningEfforts: [{id: 'high', label: 'High'}]}]});
+    await sending;
+    expect(client.turn).toHaveBeenCalledWith('codex', 's', 'Prompt', expect.objectContaining({selection: {modelId: 'native', reasoningEffort: 'high'}}));
+    await view.close();
+});
+
+it('keeps native command acceptance separate from turns and preserves newer draft edits', async () => {
+    const client = peer(), catalog = [{name: 'compact', description: 'Compact', kind: 'action' as const}];
+    client.commands = vi.fn(async () => catalog);
+    let finish!: (value: {commandId: string; output: string}) => void;
+    client.command = vi.fn(() => new Promise(resolve => {finish = resolve;}));
+    const view = new HarnessConversation(client, {...profile, capabilities: {...profile.capabilities, slashCommands: true}}, 'p', 's');
+    await view.read(); await view.commands();
+    const sending = view.command('compact');
+    await vi.waitFor(() => expect(client.command).toHaveBeenCalledOnce());
+    await view.saveDraft('Next question'); finish({commandId: 'native', output: 'Compacted'});
+    const result = await sending;
+    expect(result.draft).toBe('Next question'); expect(result.pending).toBe(false);
+    expect(result.messages).toContainEqual(expect.objectContaining({id: 'command:native', role: 'system', text: 'Compacted'}));
+    expect(client.turn).not.toHaveBeenCalled(); await view.close();
+});
+
+it('reconciles a native command after a lost response without replaying it or clearing a newer draft', async () => {
+    const client = peer(), commands = [{name: 'compact', description: 'Compact', kind: 'action' as const}];
+    client.commands = vi.fn(async () => commands);
+    client.command = vi.fn(async () => {throw Object.assign(new Error('Lost response'), {outcome: 'unknown'});});
+    let saved: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => saved, save: async (value: HarnessRecovery) => {saved = structuredClone(value);}};
+    const source = {...profile, capabilities: {...profile.capabilities, slashCommands: true}};
+    const first = new HarnessConversation(client, source, 'p', 's', true, journal); await first.read();
+    await expect(first.command('compact')).rejects.toThrow('Lost response');
+    expect(first.snapshot().pending).toBe(true); await first.saveDraft('Newer input'); await first.close();
+    const reopened = new HarnessConversation(client, source, 'p', 's', true, journal);
+    await reopened.read(); vi.mocked(client.operation).mockResolvedValue({requestId: saved!.pending!.requestId, outcome: 'committed', result: {commandId: 'native', output: 'Done'}});
+    expect((await reopened.reconcile()).draft).toBe('Newer input'); expect(client.command).toHaveBeenCalledOnce();
+    await reopened.close();
+});
 function peer(): HarnessClient {
     return {profiles:vi.fn(async () => ({epoch:'e',profiles:[profile]})), list:vi.fn(), read:vi.fn(async () => ({session:{...session}, turns:[{items:[{id:'a',type:'agentMessage',text:'native history'}]}]})),
         create:vi.fn(async () => ({session:{...session}})), resume:vi.fn(async () => ({session:{...session}})), turn:vi.fn(async () => ({turnId:'t'})),
         interrupt:vi.fn(async () => {}), respond:vi.fn(async () => {}), operation:vi.fn(), close:vi.fn(async () => {}),
         events:vi.fn(async () => ({epoch:'events',cursor:1,gap:false,events:[],requests:[]}))};
 }
+it('creates the first prompt command lazily and keeps session actions unavailable in a draft', async () => {
+    const client = peer();
+    client.commands = vi.fn(async () => [{name: 'verify', description: 'Verify', kind: 'prompt'}, {name: 'compact', description: 'Compact', kind: 'action'}]);
+    client.command = vi.fn(async () => ({turnId: 'first-command'}));
+    const source = {...profile, capabilities: {...profile.capabilities, slashCommands: true}};
+    const view = new HarnessConversation(client, source, 'p');
+    await view.read();
+    expect(await view.commands()).toContainEqual(expect.objectContaining({name: 'compact', disabled: true}));
+    await expect(view.command('compact')).rejects.toThrow(); expect(client.create).not.toHaveBeenCalled();
+    const result = await view.command('verify', 'src');
+    expect(client.create).toHaveBeenCalledOnce(); expect(client.turn).not.toHaveBeenCalled();
+    expect(result.submittedTurnId).toBe('first-command'); expect(result.sessionId).toBe('s'); await view.close();
+});
+
+it('clears the exact command completion text and preserves a later identical draft revision', async () => {
+    const client = peer();
+    client.commands = vi.fn(async () => [{name: 'compact', description: 'Compact', kind: 'action'}]);
+    client.command = vi.fn(async () => ({commandId: 'once', output: 'Done'}));
+    const view = new HarnessConversation(client, {...profile, capabilities: {...profile.capabilities, slashCommands: true}}, 'p', 's');
+    await view.read(); await view.saveDraft('  /compact ');
+    expect((await view.command('compact')).draft).toBe('');
+    let finish!: (value: {commandId: string}) => void;
+    client.command = vi.fn(() => new Promise(resolve => {finish = resolve;}));
+    await view.saveDraft('/compact '); const sending = view.command('compact', '', undefined, '/compact ');
+    await vi.waitFor(() => expect(client.command).toHaveBeenCalledOnce());
+    await view.saveDraft('New input'); await view.saveDraft('/compact '); finish({commandId: 'twice'});
+    expect((await sending).draft).toBe('/compact '); await view.close();
+});
+
+it('retains reconciled command output through history refresh, reopen and native echo replacement', async () => {
+    const client = peer();
+    client.commands = vi.fn(async () => [{name: 'compact', description: 'Compact', kind: 'action'}]);
+    client.command = vi.fn(async () => {throw Object.assign(new Error('Lost'), {outcome: 'unknown'});});
+    let saved: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => saved, save: async (record: HarnessRecovery) => {saved = structuredClone(record);}};
+    const source = {...profile, capabilities: {...profile.capabilities, slashCommands: true}};
+    const view = new HarnessConversation(client, source, 'p', 's', true, journal);
+    await view.read(); await view.saveDraft('/compact '); await expect(view.command('compact')).rejects.toThrow('Lost');
+    client.operation = vi.fn(async () => ({requestId: saved!.pending!.requestId, outcome: 'committed', result: {commandId: 'c', output: 'Done', failed: true}}));
+    const result = await view.reconcile();
+    expect(result.draft).toBe(''); expect(result.messages).toContainEqual(expect.objectContaining({id: 'command:c', text: 'Done', status: 'failed'}));
+    await view.close(); const reopened = new HarnessConversation(client, source, 'p', 's', true, journal);
+    expect((await reopened.read()).messages).toContainEqual(expect.objectContaining({id: 'command:c', text: 'Done'}));
+    vi.mocked(client.read).mockResolvedValue({session, turns: [{items: [{id: 'command:c', type: 'systemMessage', text: 'Native done'}]}]});
+    expect((await reopened.read()).messages.filter(message => message.id === 'command:c')).toEqual([expect.objectContaining({text: 'Native done'})]);
+    expect(client.command).toHaveBeenCalledOnce(); await reopened.close();
+});
+
+it('keeps newer native input when a normal message is accepted after editing', async () => {
+    const client = peer(); let finish!: (value: {turnId: string}) => void;
+    client.turn = vi.fn(() => new Promise(resolve => {finish = resolve;}));
+    const view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    const sending = view.send('First'); await vi.waitFor(() => expect(client.turn).toHaveBeenCalledOnce());
+    await view.saveDraft('Second'); finish({turnId: 'first'});
+    expect((await sending).draft).toBe('Second'); await view.close();
+});
 it('projects native roles, keeps stream items distinct and replaces deltas with finalized content', async () => {
     const client = peer(), view = new HarnessConversation(client, profile, 'p', 's');
     await view.read();
