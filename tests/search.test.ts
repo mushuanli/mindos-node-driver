@@ -18,6 +18,12 @@ it('rejects new file scopes on old servers instead of accepting an ignored scope
     expect(call).not.toHaveBeenCalled();
     await client.search(project, {query: 'x', mode: 'path'}); expect(call).toHaveBeenCalledTimes(1);
 });
+it.each(['name', 'path', 'content'] as const)('rejects disabled file search in %s mode using the project transport metadata', async mode => {
+    const call = vi.fn(async () => result), metadata = vi.fn(async () => ({'itookit/pi-agent': {fileSearch: false, fileSearchVersion: 2}}));
+    const client = new MCPProjectClient({call, metadata, close: vi.fn()});
+    await expect(client.search(project, {query: 'x', mode})).rejects.toMatchObject({code: 'ECAPABILITY'});
+    expect(metadata).toHaveBeenCalledOnce(); expect(call).not.toHaveBeenCalled();
+});
 it('requires explicit prompt capability and sends the native prompt mode', async () => {
     let prompts = false;
     const call = vi.fn(async (name: string) => name === 'harness_profiles' ? {epoch: 'e', profiles: [{id: 'native', kind: 'codex', projectRuntime: true, workspaces: [],

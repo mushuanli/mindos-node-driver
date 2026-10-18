@@ -31,9 +31,10 @@ export class MCPProjectClient implements ProjectClient {
     constructor(private readonly rpc: HarnessRpc) {}
     async search(project: RemoteProject, query: FileSearchQuery, options?: OperationOptions) {
         validateSearchDirectory(query.directory);
+        const meta = await this.rpc.metadata?.(options);
+        const capabilities = (meta?.['itookit/pi-agent'] ?? meta?.['itookit/fs-agent']) as {fileSearch?: boolean; fileSearchVersion?: number} | undefined;
+        if (capabilities?.fileSearch === false) throw new FSError('ECAPABILITY', 'Server file search unavailable');
         if (query.mode === 'name' || query.directory) {
-            const meta = await this.rpc.metadata?.(options);
-            const capabilities = (meta?.['itookit/pi-agent'] ?? meta?.['itookit/fs-agent']) as {fileSearchVersion?: number} | undefined;
             if (typeof capabilities?.fileSearchVersion !== 'number' || !Number.isSafeInteger(capabilities.fileSearchVersion) || capabilities.fileSearchVersion < 2) throw new FSError('ECAPABILITY', 'Scoped file search requires a newer server');
         }
         return validateFileSearch(await this.rpc.call('project_search', {projectId: project.id, revision: project.revision, ...query}, options));
