@@ -16,3 +16,7 @@ FileStorageBackend 是文件契约；共享文件来源与独立执行会话分�
 
 
 消息与 prompt 命令共用会话准备、版本化草稿接纳和提交后刷新；尚无会话时禁用 action。pending 保留原始输入及草稿版本，不能用规范化 slash 文本清理草稿。最近 64 个 commandId 结果进入恢复记录，原生同 ID 历史优先；回执接纳与 handler 成败分开。
+
+HarnessRecovery 持久化最近已接纳的 submittedTurnId，重开后与 pending / draftRevision 一起核对输入；模型执行是否完成与提交接纳分开，不因 UI 关闭丢失接纳事实。
+
+可选 submissionId 将宿主冻结提交关联到 turn/command 的稳定 requestId；HarnessRecovery 保存独立 submission 的 pending/accepted/rejected 回执，准备子操作仍使用独立请求。核对 create/resume 只确认准备，不接纳未发出的 turn；接纳后存储失败保持 unknown，不能把存储冲突当作原生未执行。

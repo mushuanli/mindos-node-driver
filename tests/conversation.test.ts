@@ -530,3 +530,60 @@ it.each(['missing', 'throws'])('creates and sends a native conversation through 
         expect(vi.mocked(client.create).mock.calls[0][2]?.requestId).toMatch(/^[\da-f]{8}-[\da-f-]{27}$/i);
     } finally {await view.close(); vi.unstubAllGlobals();}
 });
+
+it('restores a committed turn receipt after the view closes before composer cleanup', async () => {
+    let record: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => record, save: async (value: HarnessRecovery) => {record = structuredClone(value);}};
+    const client = peer(), first = new HarnessConversation(client, profile, 'p', 's', true, journal);
+    await first.read(); const submitted = await first.send('Persist this');
+    expect(submitted.submittedTurnId).toBeDefined(); expect(record!.submittedTurnId).toBe(submitted.submittedTurnId); await first.close();
+    const reopened = new HarnessConversation(peer(), profile, 'p', 's', true, journal);
+    expect((await reopened.read()).submittedTurnId).toBe(submitted.submittedTurnId); await reopened.close();
+});
+
+it('persists the caller submission identity through an unknown turn and exact receipt reconciliation', async () => {
+    const client = peer(); let saved: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => saved, save: async (record: HarnessRecovery) => {saved = structuredClone(record);}};
+    client.turn = vi.fn(async () => {throw Object.assign(new Error('Lost response'), {outcome: 'unknown'});});
+    const first = new HarnessConversation(client, profile, 'p', 's', true, journal); await first.read();
+    await expect(first.send('Prompt', [], undefined, 'submission-1')).rejects.toThrow('Lost response');
+    expect(client.turn).toHaveBeenCalledWith('codex', 's', 'Prompt', expect.objectContaining({requestId: 'submission-1'}));
+    expect(saved?.submission).toEqual({id: 'submission-1', status: 'pending'}); await first.close();
+    const reopened = new HarnessConversation(client, profile, 'p', 's', true, journal); await reopened.read();
+    vi.mocked(client.operation).mockResolvedValue({requestId: 'submission-1', outcome: 'committed', result: {turnId: 'confirmed'}});
+    expect((await reopened.reconcile()).submission).toEqual({id: 'submission-1', status: 'accepted', turnId: 'confirmed'});
+    await expect(reopened.send('Prompt', [], undefined, 'submission-1')).rejects.toMatchObject({code: 'ECONFLICT'});
+    expect(client.turn).toHaveBeenCalledOnce(); await reopened.close();
+});
+it('records a rejected submission when its native receipt proves it was not committed', async () => {
+    const client = peer();
+    client.turn = vi.fn(async () => {throw Object.assign(new Error('Rejected'), {outcome: 'not-committed'});});
+    const view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    await expect(view.send('Prompt', [], undefined, 'submission-1')).rejects.toThrow('Rejected');
+    expect(view.snapshot().submission).toEqual({id: 'submission-1', status: 'rejected'}); await view.close();
+});
+it('keeps action command acceptance correlated even when no turn is created', async () => {
+    const client = peer();
+    client.commands = vi.fn(async () => [{name: 'compact', description: 'Compact', kind: 'action'}]);
+    client.command = vi.fn(async () => ({commandId: 'compact-1', output: 'Done'}));
+    const view = new HarnessConversation(client, {...profile, capabilities: {...profile.capabilities, slashCommands: true}}, 'p', 's');
+    await view.read(); const result = await view.command('compact', '', undefined, '/compact', 'submission-1');
+    expect(result.submission).toMatchObject({id: 'submission-1', status: 'accepted'});
+    expect(client.command).toHaveBeenCalledWith('codex', 's', 'compact', '', expect.objectContaining({requestId: 'submission-1'}));
+    await view.close();
+});
+
+it('queries a frozen submission after a crash before the driver recorded any pending request', async () => {
+    const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    vi.mocked(client.operation).mockResolvedValue({requestId: 'frozen-before-send', outcome: 'not-committed'});
+    expect((await view.reconcile('frozen-before-send')).submission).toMatchObject({id: 'frozen-before-send', status: 'rejected'});
+    expect(client.turn).not.toHaveBeenCalled(); await view.close();
+});
+it('keeps unknown frozen submissions unresolved and refuses unrelated receipt identities', async () => {
+    const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
+    vi.mocked(client.operation).mockResolvedValue({requestId: 'frozen', outcome: 'unknown'});
+    expect((await view.reconcile('frozen')).submission).toBeUndefined();
+    vi.mocked(client.operation).mockResolvedValue({requestId: 'unrelated', outcome: 'committed', result: {turnId: 'other'}});
+    await expect(view.reconcile('frozen')).rejects.toMatchObject({code: 'EIO'});
+    expect(view.snapshot().submission).toBeUndefined(); expect(client.turn).not.toHaveBeenCalled(); await view.close();
+});

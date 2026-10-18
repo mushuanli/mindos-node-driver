@@ -8,7 +8,7 @@ import { conversationBranches } from './branches';
 import { validateAttachments, validateDeletedSessionIds, validateSession } from './validation';
 import { applyHarnessStatus, harnessObservation, harnessArchiveAllowed } from './state';
 import { ObservationErrors, connectionLost, type HarnessObservationError } from './observation-errors';
-import type { HarnessConversationJournal } from './conversation-journal';
+import {validateSubmission, type HarnessConversationJournal} from './conversation-journal';
 import { mergeMessages, historyMessages, nativeMessage, nativeRequest, type HarnessMessage, type HarnessRequest } from './conversation-model';
 
 /** One native conversation; closing a viewer never interrupts its remote turn. */
@@ -26,7 +26,7 @@ export class HarnessConversation implements HarnessConversationPort {
     private availableCommands() {
         return this.nativeCommands.map(command => ({...command, ...(!this.session && command.kind === 'action' ? {disabled: true} : {})}));
     }
-    async command(name: string, args = '', selection?: HarnessModelSelection, inputText?: string) {
+    async command(name: string, args = '', selection?: HarnessModelSelection, inputText?: string, submissionId?: string) {
         const requested = selection ? validateModelSelection(selection) : undefined;
         if (!this.loaded) await this.read();
         if (!this.snapshot().canSend || !this.client.command) throw new FSError('ECAPABILITY', 'Native command unavailable');
@@ -38,6 +38,7 @@ export class HarnessConversation implements HarnessConversationPort {
         const selected = requested && command.kind === 'prompt' ? validateAvailableSelection(requested, await this.models()) : undefined;
         if (!this.snapshot().canSend) throw new FSError('EBUSY', 'Native command unavailable');
         if (!this.draft) this.setDraft(text, []);
+        this.startSubmission(submissionId);
         const submission = {inputText: text, draftRevision: this.draftRevision};
         this.submittedTurnId = undefined;
         return this.mutate(async () => {
@@ -63,6 +64,7 @@ export class HarnessConversation implements HarnessConversationPort {
     private navigationSessionId?: string;
     private draft = '';
     private submittedTurnId?: string;
+    private submission?: import('./conversation-journal').HarnessRecovery['submission'];
     private draftAttachments: HarnessAttachment[] = [];
     private writes: Promise<void> = Promise.resolve();
     private disconnected = false;
@@ -94,7 +96,7 @@ export class HarnessConversation implements HarnessConversationPort {
         const manageable = !this.deletedSessionIds.length && this.loaded && !!this.session && !this.lifetime.signal.aborted && available && this.writable && !this.busy && !this.pending;
         observation.canInterrupt = controllable && !!this.session?.activeTurnId && this.profile.capabilities.interrupt;
         observation.canRespond = controllable && !!this.requests.length && this.profile.capabilities.interactions;
-        return {...(this.profile.capabilities.models ? {supportsModels: true} : {}), ...(this.profile.capabilities.slashCommands ? {supportsSlashCommands: true} : {}), ...(this.nativeCommands.length ? {slashCommands: this.availableCommands()} : {}), usage: this.session?.usage, usageUnavailable: this.session?.usageUnavailable, observation, submittedTurnId: this.submittedTurnId, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
+        return {...(this.profile.capabilities.models ? {supportsModels: true} : {}), ...(this.profile.capabilities.slashCommands ? {supportsSlashCommands: true} : {}), ...(this.nativeCommands.length ? {slashCommands: this.availableCommands()} : {}), usage: this.session?.usage, usageUnavailable: this.session?.usageUnavailable, observation, submission: this.submission ? {...this.submission} : undefined, submittedTurnId: this.submittedTurnId, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
             attachments: this.writable ? this.profile.capabilities.attachments : undefined,
             deletedSessionIds: this.deletedSessionIds.slice(),
             canDelete: manageable && !!this.client.delete && !!this.profile.capabilities.delete
@@ -119,12 +121,14 @@ export class HarnessConversation implements HarnessConversationPort {
         if (record?.sessionId && !this.session) this.session = {id: record.sessionId, title: record.sessionId, cwd: null, status: null, updatedAt: null, resumable: false};
         this.deletedSessionIds = record?.deletedSessionIds ?? [];
         this.pending = record?.pending; this.draft = record?.draft ?? '';
+        this.submittedTurnId = record?.submittedTurnId;
+        this.submission = validateSubmission(record?.submission);
         this.draftRevision = record?.draftRevision ?? 0;
         this.commandResults = validateCommandReceipts(record?.commandResults);
         this.draftAttachments = validateAttachments(record?.draftAttachments); this.loaded = true;
     }
     private save(sessionId = this.session?.id): Promise<void> {
-        const record = {sessionId, deletedSessionIds: this.deletedSessionIds, pending: this.pending, draft: this.draft,
+        const record = {sessionId, submission: this.submission ? {...this.submission} : undefined, submittedTurnId: this.submittedTurnId, deletedSessionIds: this.deletedSessionIds, pending: this.pending, draft: this.draft,
             draftAttachments: this.draftAttachments, draftRevision: this.draftRevision, commandResults: this.commandResults};
         const write = this.writes.then(() => this.journal?.save(record));
         this.writes = write.catch(() => {}); return write;
@@ -143,6 +147,17 @@ export class HarnessConversation implements HarnessConversationPort {
         if (submission.inputText !== undefined && submission.inputText !== this.draft) return;
         this.setDraft('', []);
     }
+    private startSubmission(id?: string): void {
+        if (id !== undefined && (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id))) throw new FSError('EINVAL', 'Invalid submission identity');
+        if (id && this.submission?.id === id) throw new FSError('ECONFLICT', 'Submission already tracked; reconcile its receipt');
+        this.submission = id ? {id, status: 'pending'} : undefined;
+    }
+    private acceptSubmission(turnId?: string): void {
+        if (this.submission?.status === 'pending') this.submission = {id: this.submission.id, status: 'accepted', turnId};
+    }
+    private rejectSubmission(): void {
+        if (this.submission?.status === 'pending') this.submission = {id: this.submission.id, status: 'rejected'};
+    }
     private async prepareSession(): Promise<void> {
         if (!this.session) this.session = (await this.native('create', options => this.client.create(this.profile.id, this.workspaceId, options))).session;
         if (!this.session.owned) this.session = (await this.native('resume', options => this.client.resume(this.profile.id, this.session!.id, options))).session;
@@ -158,6 +173,7 @@ export class HarnessConversation implements HarnessConversationPort {
     private acceptCommand(value: unknown, inputText: string): void {
         const result = validateCommandResult(value);
         this.submittedTurnId = result.turnId;
+        this.acceptSubmission(result.turnId);
         if (result.commandId) {
             const record = {commandId: result.commandId, output: result.output ?? inputText, failed: result.failed};
             this.commandResults = [...this.commandResults.filter(row => row.commandId !== result.commandId), record].slice(-64);
@@ -172,7 +188,8 @@ export class HarnessConversation implements HarnessConversationPort {
     private async native<T>(operation: string, call: (options: import('./contracts').HarnessMutationOptions) => Promise<T>,
         submission?: {inputText: string; draftRevision: number}, committed?: (result: T) => void): Promise<T> {
         const epoch = this.journal?.epoch ?? (await this.client.profiles(this.options())).epoch;
-        this.pending = {requestId: createRequestId(), epoch, operation, ...submission};
+        const requestId = ['turn', 'command'].includes(operation) && this.submission?.status === 'pending' ? this.submission.id : createRequestId();
+        this.pending = {requestId, epoch, operation, ...submission};
         try {
             try { await this.save(); } catch (error) { this.pending = undefined; throw error; }
             const result = await call({...this.options(), ...this.pending});
@@ -184,7 +201,9 @@ export class HarnessConversation implements HarnessConversationPort {
             try { await this.save(session?.id ?? this.session?.id); } catch (error) { this.pending = pending; throw error; }
             return result;
         } catch (error) {
-            if ((error as {outcome?: string})?.outcome === 'not-committed') { this.pending = undefined; await this.save(); }
+            if ((error as {outcome?: string})?.outcome === 'not-committed') {
+                this.rejectSubmission(); this.pending = undefined; await this.save();
+            } else if (this.pending && error && typeof error === 'object') Object.assign(error, {outcome: 'unknown'});
             throw error;
         }
     }
@@ -297,7 +316,7 @@ export class HarnessConversation implements HarnessConversationPort {
     private replace(message: HarnessMessage) {
         this.messages = mergeMessages(this.messages, [message]);
     }
-    async send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection) {
+    async send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection, submissionId?: string) {
         const requested = selection ? validateModelSelection(selection) : undefined;
         if (!this.loaded) await this.read();
         if (!text.trim() || !this.snapshot().canSend) throw new FSError('EBUSY', 'Conversation cannot send');
@@ -307,12 +326,14 @@ export class HarnessConversation implements HarnessConversationPort {
         if (!this.snapshot().canSend) throw new FSError('EBUSY', 'Conversation cannot send');
         this.submittedTurnId = undefined;
         this.setDraft(text, prepared);
+        this.startSubmission(submissionId);
         const submission = {inputText: text, draftRevision: this.draftRevision};
         return this.mutate(async () => {
             await this.prepareSession();
             await this.native('turn', options => this.client.turn(this.profile.id, this.session!.id, text,
                 {...options, ...(selected ? {selection: selected} : {}), ...(prepared.length ? {attachments: prepared} : {})}), submission, ({turnId}) => {
                 this.submittedTurnId = turnId;
+                this.acceptSubmission(turnId);
                 if (!this.completed.has(turnId)) { this.session!.activeTurnId = turnId; this.session!.status = 'active'; }
                 this.replace({id: `submitted:${turnId}`, role: 'user', text, turnId, timestamp: Date.now()});
             });
@@ -354,8 +375,13 @@ export class HarnessConversation implements HarnessConversationPort {
         try { await action(); } finally { this.busy = false; }
         return this.snapshot();
     }
-    async reconcile(): Promise<HarnessConversationSnapshot> {
-        if (!this.pending) return this.read();
+    async reconcile(submissionId?: string): Promise<HarnessConversationSnapshot> {
+        await this.restore();
+        if (!this.pending) {
+            if (submissionId && (this.submission?.id !== submissionId || this.submission.status === 'pending')) await this.reconcileSubmission(submissionId);
+            return this.read();
+        }
+        if (submissionId && this.submission?.id !== submissionId) return this.snapshot();
         const receipt = await this.client.operation(this.profile.id, this.pending.requestId, {...this.options(), epoch: this.pending.epoch});
         if (receipt.outcome === 'unknown') return this.snapshot();
         const result = receipt.result as {session?: HarnessSession; turnId?: string; deletedSessionIds?: string[]} | undefined;
@@ -373,12 +399,26 @@ export class HarnessConversation implements HarnessConversationPort {
             if (this.pending.operation === 'turn') {
                 if (typeof result?.turnId !== 'string') throw new FSError('EIO', 'Invalid turn receipt');
                 this.submittedTurnId = result.turnId;
+                this.acceptSubmission(result.turnId);
                 this.acceptDraft(this.pending);
             }
         }
+        if (receipt.outcome !== 'committed' || ['create', 'resume'].includes(this.pending.operation)) this.rejectSubmission();
         const pending = this.pending; this.pending = undefined;
         try { await this.save(); } catch (error) { this.pending = pending; throw error; }
         return this.read();
+    }
+    private async reconcileSubmission(id: string): Promise<void> {
+        if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new FSError('EINVAL', 'Invalid submission identity');
+        const epoch = this.journal?.epoch ?? (await this.client.profiles(this.options())).epoch;
+        const receipt = await this.client.operation(this.profile.id, id, {...this.options(), epoch});
+        if (receipt.requestId !== id) throw new FSError('EIO', 'Mismatched submission receipt');
+        if (receipt.outcome === 'unknown') return;
+        const result = receipt.result as {turnId?: unknown} | undefined;
+        const turnId = typeof result?.turnId === 'string' ? result.turnId : undefined;
+        this.submission = {id, status: receipt.outcome === 'committed' ? 'accepted' : 'rejected', turnId};
+        if (turnId) this.submittedTurnId = turnId;
+        await this.save();
     }
     close(): Promise<void> {
         this.lifetime.abort();
@@ -391,7 +431,7 @@ export type HarnessConversationSnapshot = ReturnType<HarnessConversation['snapsh
 export interface HarnessConversationPort {
     readonly kind: string;
     commands?(): Promise<import('./contracts').HarnessSlashCommand[]>;
-    command?(name: string, args?: string, selection?: HarnessModelSelection, inputText?: string): Promise<HarnessConversationSnapshot>;
+    command?(name: string, args?: string, selection?: HarnessModelSelection, inputText?: string, submissionId?: string): Promise<HarnessConversationSnapshot>;
     snapshot(): HarnessConversationSnapshot;
     delete?(): Promise<HarnessConversationSnapshot>;
     rename?(name: string): Promise<HarnessConversationSnapshot>;
@@ -403,9 +443,9 @@ export interface HarnessConversationPort {
     read(): Promise<HarnessConversationSnapshot>;
     poll(): Promise<HarnessConversationSnapshot>;
     models?(): Promise<HarnessModelCatalog>;
-    send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection): Promise<HarnessConversationSnapshot>;
+    send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection, submissionId?: string): Promise<HarnessConversationSnapshot>;
     interrupt(): Promise<HarnessConversationSnapshot>;
     respond(id: string | number, response: Record<string, unknown>): Promise<HarnessConversationSnapshot>;
-    reconcile(): Promise<HarnessConversationSnapshot>;
+    reconcile(submissionId?: string): Promise<HarnessConversationSnapshot>;
     close(): Promise<void>;
 }
