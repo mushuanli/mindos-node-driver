@@ -33,7 +33,7 @@ export class MCPHarnessClient implements HarnessClient {
         const result = await this.rpc.call('project_watch', {...this.scope, ...(this.watchId ? {watchId: this.watchId} : {})}, options) as {watchId?: unknown; version?: unknown; gap?: unknown; truncated?: unknown};
         if (typeof result?.watchId !== 'string' || !/^[a-f0-9]{32}$/.test(result.watchId) || typeof result.version !== 'string' || result.version.length > 128 || !result.version.startsWith(result.watchId + ':') || typeof result.gap !== 'boolean' || typeof result.truncated !== 'boolean') throw new FSError('EIO', 'Invalid directory watch response');
         this.watchId = result.watchId;
-        return result.version + (result.truncated ? ':partial:' + Math.floor(Date.now() / 30_000) : '');
+        return result.version;
     }
     async search(profileId: string, query: {query: string; mode: 'title' | 'content' | 'prompt'; archived?: boolean}, options?: OperationOptions) {
         if (query.mode === 'prompt' && !(await this.profiles(options)).profiles.find(profile => profile.id === profileId || profile.aliases?.includes(profileId))?.capabilities.searchPrompts)

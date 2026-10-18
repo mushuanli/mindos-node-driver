@@ -95,6 +95,8 @@ itookit 内自动发现 `tools/pi-agent`。文件进程隔离测试还需 `PI_AG
 
 `adapter.observeHarness(projects.harness(project, {readOnly: true}), false)` 创建共享 `HarnessStatusObserver`，poll 返回 profile/session 的 `HarnessObservation`；仅使用有界列表和事件，不读取每行历史、不 resume。execution、最近结果、连接、时效和控制能力分别返回。`close()` 释放底层客户端，关闭界面不停止原生 turn。
 
+第三个参数 `{watchFiles: false}` 可关闭文件目录观察，让会话状态读取与文件刷新独立。目录版本只返回服务端真实版本；覆盖不足不再拼接随时间变化的版本号。是否继续轮询由应用层按活动轮次和展示订阅决定，本驱动不启动定时器。
+
 目录监听故障只保留最近目录版本，不改变会话在线状态。各 profile 的观察错误独立隔离；状态解析、权限或超时错误以 `stale` 和 `refreshError: {stage, code}` 返回，连接失败证据或原生断开事件才标记 `offline`。成功的空事件响应也能恢复传输状态；原生进程断开仍需原生状态或权威快照确认恢复。错误期间不开放中断/响应控制；诊断只记录阶段、身份和安全错误码，并按阶段去重。
 
 服务描述 `fileSearch` 为 true 时可调用 `projects.search(project, {query, mode: 'name' | 'path' | 'content', directory?})`。profile.capabilities.search 为 true 时可调用 `harness.search(profileId, {query, mode: 'title' | 'content' | 'prompt', archived})`。两者返回 matches/truncated/nextCursor；当前 nextCursor=null，超限明确部分结果。原生命中保留 sessionId/turnId/itemId；文件命中使用相对路径和行号。查询只读、默认字面匹配，调用方继续核验授权身份、取消及结果时效。

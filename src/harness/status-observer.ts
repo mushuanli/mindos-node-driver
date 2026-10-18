@@ -27,14 +27,15 @@ export class HarnessStatusObserver implements HarnessStatusPort {
     private readonly errors = new ObservationErrors();
     fileVersion() { return this.directoryVersion; }
     private pending?: Promise<HarnessStatusRow[]>;
-    constructor(private readonly client: HarnessClient, private readonly now = Date.now, private readonly writable = true) {}
+    constructor(private readonly client: HarnessClient, private readonly now = Date.now, private readonly writable = true,
+        private readonly watchFiles = true) {}
     poll(options?: import('@itookit/vfs-core').OperationOptions): Promise<HarnessStatusRow[]> {
         if (this.pending) return this.pending;
         const work = this.update(options).finally(() => { this.pending = undefined; });
         this.pending = work; return work;
     }
     private async update(options?: import('@itookit/vfs-core').OperationOptions): Promise<HarnessStatusRow[]> {
-        await this.watchDirectory(options);
+        if (this.watchFiles) await this.watchDirectory(options);
         try {
             if (!this.profiles.size) for (const profile of (await this.client.profiles(options)).profiles) {
                 if (profile.projectRuntime && profile.capabilities.history && this.profiles.size < 16) this.profiles.set(profile.id,

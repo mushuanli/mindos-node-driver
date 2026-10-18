@@ -89,6 +89,16 @@ it('keeps directory observation alive when there are no native sessions', async 
     client.directoryVersion = vi.fn(async () => 'watch:1'); expect(await observer.poll()).toEqual([]);
     expect(observer.fileVersion()).toBe('watch:1'); expect(client.read).not.toHaveBeenCalled(); await observer.close();
 });
+it('can observe session activity without starting a directory watch', async () => {
+    const {client} = fixture(); client.directoryVersion = vi.fn(async () => 'watch:1');
+    const observer = new HarnessStatusObserver(client, Date.now, true, false);
+    expect((await observer.poll())[0].observation.execution).toBe('idle');
+    vi.mocked(client.events).mockResolvedValue({...page, cursor: 1,
+        events: [{seq: 1, message: {method: 'turn/started', params: {threadId: 's', turn: {id: 't'}}}}]});
+    expect((await observer.poll())[0].observation.execution).toBe('running');
+    expect(client.directoryVersion).not.toHaveBeenCalled(); expect(observer.fileVersion()).toBeUndefined();
+    await observer.close(); expect(client.close).toHaveBeenCalledOnce();
+});
 it('a disconnected Claude process does not disconnect another owned session', async () => {
     const {client, observer} = fixture(); vi.mocked(client.list).mockResolvedValue({sessions: [session, {...session, id: 'other'}], nextCursor: null});
     await observer.poll(); vi.mocked(client.events).mockResolvedValue({...page, cursor: 1, events: [{seq: 1, message: {method: 'harness/disconnected', params: {threadId: 's'}}}]});

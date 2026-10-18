@@ -118,6 +118,15 @@ it('observes project directories only when discovered, validates responses and r
     const old = new MCPHarnessClient({call, close}, {projectId: 'p', revision: 2});
     expect(await old.directoryVersion()).toBeUndefined(); expect(call).toHaveBeenCalledTimes(4);
 });
+it('never manufactures directory versions from elapsed time when watch coverage is partial', async () => {
+    const token = 'b'.repeat(32), now = vi.spyOn(Date, 'now').mockReturnValue(30_000);
+    const call = vi.fn(async () => ({watchId: token, version: token + ':0', gap: false, truncated: true}));
+    const client = new MCPHarnessClient({call, close: vi.fn(), metadata: async () => ({'itookit/pi-agent': {fileWatch: true}})}, {projectId: 'p', revision: 1});
+    try {
+        const first = await client.directoryVersion(); now.mockReturnValue(60_000);
+        expect(await client.directoryVersion()).toBe(first); expect(first).toBe(token + ':0');
+    } finally {now.mockRestore();}
+});
 
 it.each(['missing', 'throws'])('uses the internal mutation ID generator when native UUID %s', async mode => {
     const original = globalThis.crypto;
