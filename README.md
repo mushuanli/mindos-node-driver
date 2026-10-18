@@ -93,6 +93,8 @@ itookit 内自动发现 `tools/pi-agent`。文件进程隔离测试还需 `PI_AG
 
 ## 只读状态与搜索
 
+多关键字查询以空格/制表符分隔，按不区分大小写、顺序不限的字面 AND 匹配；文件内容以命中行为单位，原生会话内容以消息为单位。文件 discovery metadata 与原生 profile 分别用 `searchKeywords: true` 声明该语义；driver 在含分词空白的查询发送前核对能力，避免旧节点静默按整段短语搜索。显式换行保留原有字面多行语义。
+
 `adapter.observeHarness(projects.harness(project, {readOnly: true}), false)` 创建共享 `HarnessStatusObserver`，poll 返回 profile/session 的 `HarnessObservation`；仅使用有界列表和事件，不读取每行历史、不 resume。execution、最近结果、连接、时效和控制能力分别返回。`close()` 释放底层客户端，关闭界面不停止原生 turn。
 
 第三个参数 `{watchFiles: false}` 可关闭文件目录观察，让会话状态读取与文件刷新独立。目录版本只返回服务端真实版本；覆盖不足不再拼接随时间变化的版本号。是否继续轮询由应用层按活动轮次和展示订阅决定，本驱动不启动定时器。

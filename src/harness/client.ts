@@ -36,8 +36,12 @@ export class MCPHarnessClient implements HarnessClient {
         return result.version;
     }
     async search(profileId: string, query: {query: string; mode: 'title' | 'content' | 'prompt'; archived?: boolean}, options?: OperationOptions) {
-        if (query.mode === 'prompt' && !(await this.profiles(options)).profiles.find(profile => profile.id === profileId || profile.aliases?.includes(profileId))?.capabilities.searchPrompts)
-            throw new FSError('ECAPABILITY', 'Prompt search requires a newer server');
+        const keywords = /[^\S\r\n]/u.test(query.query);
+        if (keywords || query.mode === 'prompt') {
+            const capabilities = (await this.profiles(options)).profiles.find(profile => profile.id === profileId || profile.aliases?.includes(profileId))?.capabilities;
+            if (query.mode === 'prompt' && !capabilities?.searchPrompts) throw new FSError('ECAPABILITY', 'Prompt search requires a newer server');
+            if (keywords && !capabilities?.searchKeywords) throw new FSError('ECAPABILITY', 'Keyword search requires a newer server');
+        }
         const result = await this.rpc.call('harness_session_search', {...this.scope, profileId, ...query}, options) as import('./contracts').HarnessSearchResult;
         if (!result || !Array.isArray(result.matches) || result.matches.length > 100 || typeof result.truncated !== 'boolean' || result.nextCursor !== null)
             throw new FSError('EIO', 'Invalid harness search response');

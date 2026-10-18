@@ -2,6 +2,28 @@ import { expect, it, vi } from 'vitest';
 import { MCPProjectClient } from '../src/projects';
 const project = {id: 'p', name: 'P', alias: 'home', path: 'p', access: 'rw' as const, revision: 3, mounts: []};
 const result = {matches: [{path: 'nested/file.txt', summary: 'needle'}], truncated: false, nextCursor: null};
+it('negotiates keyword semantics on the same project connection and preserves the literal query', async () => {
+    let searchKeywords = false;
+    const call = vi.fn(async () => result), metadata = vi.fn(async () => ({'itookit/pi-agent': {fileSearchVersion: 2, searchKeywords}}));
+    const client = new MCPProjectClient({call, metadata, close: vi.fn()});
+    await expect(client.search(project, {query: 'Beta alpha', mode: 'content'})).rejects.toMatchObject({code: 'ECAPABILITY'});
+    expect(call).not.toHaveBeenCalled();
+    searchKeywords = true;
+    await client.search(project, {query: 'Beta\talpha　a.*', mode: 'content', directory: 'nested'});
+    expect(call).toHaveBeenCalledExactlyOnceWith('project_search', {projectId: 'p', revision: 3, query: 'Beta\talpha　a.*', mode: 'content', directory: 'nested'}, undefined);
+});
+
+it.each(['title', 'content', 'prompt'] as const)('requires native keyword capability for %s and resolves profile aliases', async mode => {
+    let searchKeywords = false;
+    const call = vi.fn(async (name: string) => name === 'harness_profiles' ? {epoch: 'e', profiles: [{id: 'native', aliases: ['alias'], kind: 'codex', projectRuntime: true, workspaces: [],
+        capabilities: {history: true, create: true, resume: true, interrupt: true, interactions: true, search: true, searchPrompts: true, searchKeywords}}]} : {matches: [], truncated: false, nextCursor: null});
+    const client = new MCPProjectClient({call, close: vi.fn()}).harness(project);
+    await expect(client.search!('alias', {query: 'Beta alpha', mode})).rejects.toMatchObject({code: 'ECAPABILITY'});
+    expect(call.mock.calls.map(args => args[0])).not.toContain('harness_session_search');
+    searchKeywords = true;
+    await client.search!('alias', {query: 'Beta alpha', mode});
+    expect(call).toHaveBeenLastCalledWith('harness_session_search', {projectId: 'p', revision: 3, profileId: 'alias', query: 'Beta alpha', mode}, undefined);
+});
 it('negotiates scoped/name file search and retains project revision and source-relative paths', async () => {
     const call = vi.fn(async () => result), metadata = vi.fn(async () => ({'itookit/pi-agent': {fileSearchVersion: 2}}));
     const client = new MCPProjectClient({call, metadata, close: vi.fn()});
