@@ -1,13 +1,13 @@
 {
   "name": "@itookit/piagent-driver",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Platform-independent client for pi-agent: controlled files, projects, sync, processes and native AI harness sessions.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": { ".": "./src/index.ts", "./harness": "./src/harness/index.ts", "./sync": "./src/sync/client.ts", "./authorization": "./src/authorization.ts" },
   "scripts": { "typecheck": "tsc --noEmit", "test": "vitest run", "build": "tsup", "prepublishOnly": "pnpm build" },
-  "dependencies": { "@itookit/vfs-core": "5.3.2", "@itookit/vfs-sync": "0.1.0", "@modelcontextprotocol/client": "2.0.0" },
+  "dependencies": { "@itookit/vfs-core": "5.3.3", "@itookit/vfs-sync": "0.1.1", "@modelcontextprotocol/client": "2.0.0" },
   "devDependencies": { "typescript": "^5.9.3", "vitest": "^3.2.4", "tsup": "^8.5.1", "@types/node": "^20.19.25" },
   "publishConfig": {
     "access": "public",
