@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, chmod, rm, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join, dirname } from 'node:path';
-import { createMindOSNodeClient } from '../src/provider';
+import { createMindOSNodeDriver } from '../src/provider';
 
 const enabled = process.env.MINDOS_NODE_HARNESS_TEST === '1';
 const manifest = resolve(process.env.MINDOS_NODE_MANIFEST ?? '../../tools/mindos-node/Cargo.toml');
@@ -17,7 +17,7 @@ it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio har
     await writeFile(config,`listen = "127.0.0.1:0"\nserver_id = "network-node"\nexecution = false\ntoken = "test-harness-token-0123456789"\n[projects]\nroot = ${JSON.stringify(catalog)}\n[[exports]]\nalias = "home"\npath = ${JSON.stringify(exports)}\naccess = "rw"\n[[harnesses]]\nid = "codex"\nkind = "codex"\nprojects = true\ncommand = ${JSON.stringify(fixture)}\nhome = ${JSON.stringify(home)}\n[[harnesses.workspaces]]\nid = "project"\npath = ${JSON.stringify(home)}\n`);
     const child = spawn('cargo' ,['run','--quiet','--offline','--manifest-path',manifest,'--',config],{ stdio:['ignore','ignore','pipe'] });
     const exit = new Promise<void>(resolve => child.once('exit',() => resolve()));
-    let adapter: ReturnType<typeof createMindOSNodeClient> | undefined;
+    let adapter: ReturnType<typeof createMindOSNodeDriver> | undefined;
     try {
         const endpoint = await new Promise<string>((resolve,reject) => {
             const timer = setTimeout(() => reject(new Error('mindos-node startup timed out')),20_000);
@@ -36,7 +36,7 @@ it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio har
             child.once('error',error => { clearTimeout(timer); reject(error); });
             child.once('exit',code => { clearTimeout(timer); reject(new Error('mindos-node exited: ' + code)); });
         });
-        adapter = createMindOSNodeClient(); adapter.setCredential('ref','test-harness-token-0123456789');
+        adapter = createMindOSNodeDriver(); adapter.setCredential('ref','test-harness-token-0123456789');
         const descriptor = await adapter.discover({endpoint:endpoint + '/mcp',credentialRef:'ref'});
         expect(descriptor).toMatchObject({version:1,fileProtocol:'fs-agent-http-v1',httpEndpoint:endpoint,harness:true,projects:true,projectProtocol:'fs-agent-project-v1'});
         const projects=adapter.projects({endpoint,credentialRef:'ref'});

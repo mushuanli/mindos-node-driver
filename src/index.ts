@@ -1,11 +1,15 @@
-export { createMindOSNodeClient } from './provider';
-/** @deprecated Use createMindOSNodeClient. */
-export { createMindOSNodeClient as createPiAgentDriver } from './provider';
-/** @deprecated Use MindOSNodeClient and MindOSNodeDescriptor. */
-export type { MindOSNodeClient as PiAgentDriver, MindOSNodeDescriptor as PiAgentDescriptor } from './provider';
+export { createMindOSNodeDriver } from './provider';
+/** @deprecated Use createMindOSNodeDriver. */
+export { createMindOSNodeDriver as createMindOSNodeClient } from './provider';
+/** @deprecated Use MindOSNodeDriver. */
+export type { MindOSNodeDriver as MindOSNodeClient } from './provider';
+/** @deprecated Use createMindOSNodeDriver. */
+export { createMindOSNodeDriver as createPiAgentDriver } from './provider';
+/** @deprecated Use MindOSNodeDriver and MindOSNodeDescriptor. */
+export type { MindOSNodeDriver as PiAgentDriver, MindOSNodeDescriptor as PiAgentDescriptor } from './provider';
 export type { RemoteAuthorization, RemoteProjectCapabilities } from './authorization';
 export { validateAuthorization } from './authorization';
-export type { MindOSNodeClient, MindOSNodeDescriptor } from './provider';
+export type { MindOSNodeDriver, MindOSNodeDescriptor } from './provider';
 export * from './files/index';
 export type { HarnessClient, HarnessMutationOptions, HarnessProfile, HarnessSession, HarnessPage, HarnessHistory, HarnessHistoryOptions, HarnessEvent, HarnessEvents, HarnessReceipt } from './harness/contracts';
 

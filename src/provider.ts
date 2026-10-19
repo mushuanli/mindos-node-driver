@@ -14,7 +14,7 @@ import { HarnessStatusObserver, type HarnessStatusPort } from './harness/status-
 
 type Connection = Omit<RemoteConnection, 'alias'>;
 export interface MindOSNodeDescriptor { authorization?: RemoteAuthorization; version: 1; httpEndpoint: string; serverId: string | null; fileProtocol: 'fs-agent-http-v1'; harness: boolean; projects?: boolean; sync?: boolean; projectProtocol?: string; directorySync?: boolean; directorySyncVersion?: number; fileSearch?: boolean; fileWatch?: boolean; }
-export interface MindOSNodeClient extends HttpSourceProvider {
+export interface MindOSNodeDriver extends HttpSourceProvider {
     observeHarness(client: HarnessClient, writable?: boolean, options?: {watchFiles?: boolean}): HarnessStatusPort;
     open(connection: RemoteConnection & {serverProjectId?: string; serverProjectRevision?: number; access?: 'ro' | 'rw'}, options?: import('@itookit/vfs-core').OperationOptions): ReturnType<HttpSourceProvider['open']>;
     resolveCredential(reference: string): Promise<string>;
@@ -27,7 +27,7 @@ export interface MindOSNodeClient extends HttpSourceProvider {
 }
 
 /** A single credential owner; file, sync and harness clients retain independent lifetimes. */
-export function createMindOSNodeClient(resolveCredential?: (reference: string) => string | Promise<string>, fetch = globalThis.fetch): MindOSNodeClient {
+export function createMindOSNodeDriver(resolveCredential?: (reference: string) => string | Promise<string>, fetch = globalThis.fetch): MindOSNodeDriver {
     const secrets = new Map<string, string>();
     const credential = async (ref: string) => {
         const value = secrets.get(ref) ?? await resolveCredential?.(ref);
