@@ -1,19 +1,17 @@
-# @itookit/piagent-driver
+# @itookit/mindos-node-client
 
-PI 表示 Personal Information（个人信息）。
+连接 [mindos-node](https://github.com/mushuanli/mindos-node) 的平台无关客户端。mindos-node 是 MindOS 的个人智能节点，将设备上的文件、项目和执行环境接入 MindOS；本包统一封装文件访问、项目管理、同步、进程与原生 AI harness 会话。源码仓库：[mindos-node-client](https://github.com/mushuanli/piagent-driver)。
 
-连接 [pi-agent](https://github.com/mushuanli/pi-agent) 的平台无关客户端。pi-agent 是 MindOS 的个人智能节点，将设备上的文件、项目和执行环境接入 MindOS；本包统一封装文件访问、项目管理、同步、进程与原生 AI harness 会话。源码仓库：[piagent-driver](https://github.com/mushuanli/piagent-driver)。
-
-Web、Tauri、CLI 创建 `createPiAgentDriver()`，共用连接和运行期凭据。原 vfsdriver-agent 的文件与进程实现已并入 `src/files`，保留 revision、条件写入、流传输与隔离语义，发布包不再依赖旧驱动。HTTP 同步客户端通过 `/sync` 导出；harness 通过 `/harness` 导出并使用 MCP SDK 2.0.0、协议 2026-07-28。Codex app-server 和 Claude Code SDK 的原生协议留在服务端。
+Web、Tauri、CLI 创建 `createMindOSNodeClient()`，共用连接和运行期凭据。原 vfsdriver-agent 的文件与进程实现已并入 `src/files`，保留 revision、条件写入、流传输与隔离语义，发布包不再依赖旧驱动。HTTP 同步客户端通过 `/sync` 导出；harness 通过 `/harness` 导出并使用 MCP SDK 2.0.0、协议 2026-07-28。Codex app-server 和 Claude Code SDK 的原生协议留在服务端。
 
 ```sh
-pnpm add @itookit/piagent-driver
+pnpm add @itookit/mindos-node-client
 ```
 
 ```ts
-import { createPiAgentDriver } from '@itookit/piagent-driver';
+import { createMindOSNodeClient } from '@itookit/mindos-node-client';
 
-const adapter = createPiAgentDriver();
+const adapter = createMindOSNodeClient();
 adapter.setCredential('workstation', password);
 const connection = { endpoint: 'http://127.0.0.1:8787', username: 'owner', credentialRef: 'workstation' };
 const harness = adapter.harness(connection);
@@ -31,18 +29,18 @@ await adapter.dispose();
 
 修改请求携带服务 epoch 和唯一 requestId。断网、超时或失去响应均不自动重放，错误保留 requestId，可用 `operation()` 确认收据。收据和接管关系为服务进程内状态，重启后必须重新发现 profile，不能跨 epoch 重放。每个 profile 保留至多 1024 条收据，不淘汰仍可能被查询的记录；达到上限拒绝新的修改。
 
-当前支持 Codex 与 Claude Code 的会话分页、历史、新建、继续、消息、增量输出、中断、命令/文件审批和用户问题；Codex 另外声明分支、重命名和归档能力。其他 harness 通过服务端 HarnessPlugin/HarnessDriver 扩展，不改变宿主连接入口。配置和使用见 [pi-agent README](https://github.com/mushuanli/pi-agent#readme)。
+当前支持 Codex 与 Claude Code 的会话分页、历史、新建、继续、消息、增量输出、中断、命令/文件审批和用户问题；Codex 另外声明分支、重命名和归档能力。其他 harness 通过服务端 HarnessPlugin/HarnessDriver 扩展，不改变宿主连接入口。配置和使用见 [mindos-node README](https://github.com/mushuanli/mindos-node#readme)。
 
-验证：`pnpm --filter @itookit/piagent-driver test`、`typecheck`；`PI_AGENT_HARNESS_TEST=1 pnpm --filter @itookit/piagent-driver test tests/network.test.ts` 启动本地 Rust 服务和模拟 Codex，验证真实 MCP 网络链路，不调用模型。
+验证：`pnpm --filter @itookit/mindos-node-client test`、`typecheck`；`MINDOS_NODE_HARNESS_TEST=1 pnpm --filter @itookit/mindos-node-client test tests/network.test.ts` 启动本地 Rust 服务和模拟 Codex，验证真实 MCP 网络链路，不调用模型。
 
-客户端配置入口统一为“工具箱 → MCP”。通用管理器完成标准发现后，由 app-core 注册的 pi-agent 扩展验证 `server/discover._meta['itookit/pi-agent']`，获得同源文件 HTTP 端点、fileProtocol、serverId 和 harness 能力；旧服务只调用已声明的能力工具，普通 MCP 不发专用探测。测试、保存和改名复用验证结果，连接身份变化重新验证。原服务根地址只作为发现结果供文件/同步访问，用户填写完整 `/mcp` 地址。认证解析器也注入通用 MCP 客户端，每次请求读取当前凭据；API Key 使用 MCP 配置存储，项目只保存引用。
+客户端配置入口统一为“工具箱 → MCP”。通用管理器完成标准发现后，由 app-core 注册的 mindos-node 扩展验证 `server/discover._meta['itookit/mindos-node']`（兼容旧 `itookit/pi-agent`），获得同源文件 HTTP 端点、fileProtocol、serverId 和 harness 能力；旧服务只调用已声明的能力工具，普通 MCP 不发专用探测。测试、保存和改名复用验证结果，连接身份变化重新验证。原服务根地址只作为发现结果供文件/同步访问，用户填写完整 `/mcp` 地址。认证解析器也注入通用 MCP 客户端，每次请求读取当前凭据；API Key 使用 MCP 配置存储，项目只保存引用。
 
-driver 独立使用 `discover()` 时也优先消费 SDK 已连接的标准发现元数据，避免额外能力调用；无元数据时兼容 piagent_capabilities，只有工具缺失才尝试旧 fsagent_capabilities。元数据不合法时拒绝，不绕过校验。
+driver 独立使用 `discover()` 时也优先消费 SDK 已连接的标准发现元数据，避免额外能力调用；无元数据时依次尝试 mindos_node_capabilities、piagent_capabilities、fsagent_capabilities，仅工具缺失时尝试下一个名称。元数据不合法时拒绝，不绕过校验。
 
 
 `projects(connection)` 提供服务端目录项目的 roots/list/read/register/configure/exec。`register({alias,path,name,access,createDirectory:true})` 在已有父目录下创建一个目录并注册；不创建所有父目录。项目客户端的 `harness(project,{readOnly})` 继承项目 ID/revision，开放对应 profile 的项目 workspace。`projectProcess` 复用原进程取消与回收逻辑，启动时改走服务端项目授权。文件 open 传入 serverProjectId/serverProjectRevision/access 后添加项目上下文 headers；普通文件与旧服务访问保持兼容。
 
-方案及部署见 [项目模型](https://github.com/mushuanli/itookit/blob/v5.3/doc/design/pi-agent-project-model.md)。
+方案及部署见 [项目模型](https://github.com/mushuanli/itookit/blob/v5.3/doc/design/mindos-node-project-model.md)。
 
 Directory materialization is available when discovery returns `directorySync: true`.
 Use `projects.directorySync()` to bind a published files dataset to an existing
@@ -51,11 +49,11 @@ binding ID stable. Upload completion and directory application are separate
 outcomes. On timeout or partial failure, query `status` and resume the retained
 plan; never replace an `applying` plan. Deletes and project mounts are excluded.
 
-目录同步客户端提供目录浏览、方向 CAS 配置、带来源／目标的计划、冲突正文比较与选侧后重新预览。旧服务器只能执行其声明支持的单向能力。piagent_capabilities 是主发现工具；旧 fsagent_capabilities 与 itookit/fs-agent MCP 扩展继续兼容读取。共享 vfs-sync manifest 和文件 HTTP 协议保持已有编码。
+目录同步客户端提供目录浏览、方向 CAS 配置、带来源／目标的计划、冲突正文比较与选侧后重新预览。旧服务器只能执行其声明支持的单向能力。mindos_node_capabilities 是主发现工具；旧 piagent_capabilities、fsagent_capabilities 与旧 MCP 扩展继续兼容读取。共享 vfs-sync manifest 和文件 HTTP 协议保持已有编码。
 
 ## 文件与进程接口
 
-包根保留 `HttpFSBackend`、`openHttpFileSource`、`createHttpSourceProvider`、`HttpTransport`、`HttpProcessSession` 和 `HttpSeqClient`。迁移旧 npm 引用时将 `@itookit/vfsdriver-agent` 改为 `@itookit/piagent-driver`；这些接口的所有权和文件协议保持一致。统一装配优先使用 `createPiAgentDriver()`。
+包根保留 `HttpFSBackend`、`openHttpFileSource`、`createHttpSourceProvider`、`HttpTransport`、`HttpProcessSession` 和 `HttpSeqClient`。迁移旧 npm 引用时将 `@itookit/vfsdriver-agent` 改为 `@itookit/mindos-node-client`；这些接口的所有权和文件协议保持一致。统一装配优先使用 `createMindOSNodeClient()`。
 
 `HttpFSBackend` 实现 `FileStorageBackend`，由 `FileStorageAdapter` 接入 VFS。文件来源按 endpoint、身份和 alias 共享初始化，每次 `open()` 返回独立释放句柄。订阅者取消不会中断其他读取，最后一个引用释放后关闭来源。进程 owner 由执行上下文显式 `release()`，关闭文件视图不表示命令已结束；无法确认退出时保留进程 ID 供重试清理。
 
@@ -70,8 +68,8 @@ plan; never replace an `applying` plan. Deletes and project mounts are excluded.
 ## 独立开发与发布
 
 ```sh
-git clone https://github.com/mushuanli/piagent-driver.git
-cd piagent-driver
+git clone https://github.com/mushuanli/piagent-driver.git mindos-node-client
+cd mindos-node-client
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
@@ -84,11 +82,11 @@ TypeScript 配置与依赖独立于 itookit。发布仅包含 `dist`、README �
 纯单元测试不要求 Rust。Linux 下可指定独立服务器 checkout 进行真实文件与 harness 验证：
 
 ```sh
-PI_AGENT_MANIFEST=/path/to/pi-agent/Cargo.toml pnpm exec vitest run tests/files/network.test.ts
-PI_AGENT_MANIFEST=/path/to/pi-agent/Cargo.toml PI_AGENT_HARNESS_TEST=1 pnpm exec vitest run tests/network.test.ts
+MINDOS_NODE_MANIFEST=/path/to/mindos-node/Cargo.toml pnpm exec vitest run tests/files/network.test.ts
+MINDOS_NODE_MANIFEST=/path/to/mindos-node/Cargo.toml MINDOS_NODE_HARNESS_TEST=1 pnpm exec vitest run tests/network.test.ts
 ```
 
-itookit 内自动发现 `tools/pi-agent`。文件进程隔离测试还需 `PI_AGENT_PROCESS_TEST=1`；harness 网络测试使用模拟 Codex，不调用模型。旧协议标识和历史数据保持兼容，旧包的已发布版本不会被覆盖。
+itookit 内自动发现 `tools/mindos-node`。文件进程隔离测试还需 `MINDOS_NODE_PROCESS_TEST=1`；harness 网络测试使用模拟 Codex，不调用模型。旧协议标识和历史数据保持兼容，旧包的已发布版本不会被覆盖。
 
 
 ## 只读状态与搜索
@@ -125,13 +123,13 @@ Codex profile 声明 rename/archive/unarchive 与 attachments 能力。`harness.
 
 ### Native usage
 
-`HarnessSession.usage` and conversation snapshots carry validated native transcript usage from pi-agent 0.1.5+. `HarnessClient.usage(profileId, sessionId)` queries the read-only tool directly; ordinary viewers reuse the usage piggybacked on history/inspection. Unsupported older servers leave usage absent. The client validates session identity, safe nonnegative token counts, unique entries and matching totals. Input/cache buckets are disjoint, reasoning is already part of output. This package has no model catalog, pricing fallback or billing policy; hosts may decorate snapshots with their own estimates.
+`HarnessSession.usage` and conversation snapshots carry validated native transcript usage from mindos-node 0.1.5+. `HarnessClient.usage(profileId, sessionId)` queries the read-only tool directly; ordinary viewers reuse the usage piggybacked on history/inspection. Unsupported older servers leave usage absent. The client validates session identity, safe nonnegative token counts, unique entries and matching totals. Input/cache buckets are disjoint, reasoning is already part of output. This package has no model catalog, pricing fallback or billing policy; hosts may decorate snapshots with their own estimates.
 
 ### Directory principals and public access (0.2)
 
 A connection can explicitly set `anonymous: true` to access public read-only exports. The driver omits Authorization and never resolves a credential in this mode; a failed authenticated request never falls back to anonymous access. Authenticated connections continue using Bearer or Basic credentials supplied by the host.
 
-Discovery exposes an optional `authorization` snapshot (`principalId`, `anonymous`, `revision`). Pass it on the connection to fence subsequent HTTP and MCP requests to the same identity and grant revision. Source pooling includes this snapshot and anonymous mode. A changed grant requires explicit discovery and refreshing the binding; it cannot silently reuse another user's view. The pure `@itookit/piagent-driver/authorization` entry validates snapshots without loading the MCP runtime.
+Discovery exposes an optional `authorization` snapshot (`principalId`, `anonymous`, `revision`). Pass it on the connection to fence subsequent HTTP and MCP requests to the same identity and grant revision. Source pooling includes this snapshot and anonymous mode. A changed grant requires explicit discovery and refreshing the binding; it cannot silently reuse another user's view. The pure `@itookit/mindos-node-client/authorization` entry validates snapshots without loading the MCP runtime.
 
 Projects expose optional effective capabilities for file reads/writes, execution and session control. A read-only file mount can permit native conversation control when the server grants execution separately. Servers without these fields retain the host's conservative legacy behavior. The driver implements transport and validation; directory ACL policy and user-to-credential binding belong to the server and host respectively.
 
@@ -152,3 +150,7 @@ Profiles opt in with `capabilities.models`. `HarnessClient.models(profileId, ses
 
 
 `HarnessConversation.command(name, args?, selection?, inputText?)` preserves the original composer text separately from parsed arguments. Prompt commands lazily prepare a session through the same path as messages; session actions are disabled until a native session exists. Recovery captures the draft revision and original text, so confirmed receipts cannot erase later edits, including edits restored to identical text. Recent command results (up to 64, each output limited to 128 Ki characters) survive refresh and reopening; authoritative native records with the same command ID replace their local presentation. A failed command handler can still have a committed receipt and must not be replayed.
+
+## 从 piagent-driver 迁移
+
+包名改为 `@itookit/mindos-node-client`，首选工厂为 `createMindOSNodeClient()`，类型为 `MindOSNodeClient` / `MindOSNodeDescriptor`。包根暂时保留旧工厂与类型别名。源码仓库地址暂沿用 `mushuanli/piagent-driver`，包名与本地目录不再沿用旧名。旧包的已发布版本保持可用。新客户端兼容新旧发现描述与能力工具，HTTP 授权头、协议编码和持久身份不迁移。

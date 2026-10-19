@@ -26,7 +26,7 @@ export class MCPHarnessClient implements HarnessClient {
         if (!this.scope) return;
         if (this.filesEnabled === undefined) {
             const meta = await this.rpc.metadata?.(options);
-            const capability = (meta?.['itookit/pi-agent'] ?? meta?.['itookit/fs-agent']) as {fileWatch?: boolean} | undefined;
+            const capability = (meta?.['itookit/mindos-node'] ?? meta?.['itookit/pi-agent'] ?? meta?.['itookit/fs-agent']) as {fileWatch?: boolean} | undefined;
             this.filesEnabled = capability?.fileWatch === true;
         }
         if (!this.filesEnabled) return;

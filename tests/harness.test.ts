@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import {validateCommands} from '../src/harness/commands';
 import { MCPHarnessClient } from '../src/harness/client';
-import { createPiAgentDriver } from '../src/provider';
+import { createMindOSNodeClient } from '../src/provider';
 import { validateEvents, validateHistory, validatePage, validateProfiles, validateSession } from '../src/harness/validation';
 
 const session = { id: 's',title:'<script>x</script>',cwd:'/workspace',status:'idle',updatedAt:1,resumable:true };
@@ -73,7 +73,7 @@ it('uses the MCP v2 SDK and resolves updated credentials for each request',async
             : { resultType:'complete',content:[],structuredContent:{ epoch:'e',profiles:[] } };
         return new Response(JSON.stringify({ jsonrpc:'2.0',id:body.id,result }),{ headers:{ 'content-type':'application/json' } });
     });
-    const adapter = createPiAgentDriver(undefined,fetch);
+    const adapter = createMindOSNodeClient(undefined,fetch);
     adapter.setCredential('ref','first');
     const client = adapter.harness({ endpoint:'http://localhost:8787',credentialRef:'ref' });
     await client.profiles(); adapter.setCredential('ref','second'); await client.profiles();
