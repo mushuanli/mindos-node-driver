@@ -121,16 +121,19 @@ export class MCPHarnessClient implements HarnessClient {
         return receipt;
     }
     private async mutate(name: string, args: object, options?: HarnessMutationOptions, decode = (value: unknown): unknown => value): Promise<unknown> {
-        if (!this.epoch) await this.profiles(options);
         const requestId = options?.requestId ?? createRequestId();
+        let sent = false;
         try {
+            if (!this.epoch) await this.profiles(options);
+            sent = true;
             const receipt = validateReceipt(await this.rpc.call(name, { ...args, ...this.scope, epoch: options?.epoch ?? this.epoch, requestId }, options));
             if (receipt.requestId !== requestId) throw new FSError('EIO', 'Mismatched harness receipt');
             if (receipt.outcome !== 'committed') throw Object.assign(new FSError('EIO', receipt.code ?? 'Harness operation incomplete'), receipt);
             return decode(receipt.result);
         } catch (error) {
-            if (error && typeof error === 'object' && 'outcome' in error) throw error;
-            throw Object.assign(new FSError('EIO', 'Harness operation outcome unknown'), { requestId, outcome: 'unknown', cause: error });
+            if (sent && error && typeof error === 'object' && 'outcome' in error) throw error;
+            throw Object.assign(new FSError('EIO', sent ? 'Harness operation outcome unknown' : 'Harness operation was not sent'),
+                { requestId, outcome: sent ? 'unknown' : 'not-committed', cause: error });
         }
     }
     async close() {

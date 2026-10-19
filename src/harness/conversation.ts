@@ -28,14 +28,14 @@ export class HarnessConversation implements HarnessConversationPort {
     }
     async command(name: string, args = '', selection?: HarnessModelSelection, inputText?: string, submissionId?: string) {
         const requested = selection ? validateModelSelection(selection) : undefined;
-        if (!this.loaded || Date.now() - this.observedAt > 30_000) await this.read();
+        if (!this.loaded || Date.now() - this.observedAt > 30_000) await this.beforeSubmission(() => this.read());
         if (!this.snapshot().canSend || !this.client.command) throw new FSError('ECAPABILITY', 'Native command unavailable');
-        const command = (await this.commands()).find(row => row.name === name);
+        const command = (await this.beforeSubmission(() => this.commands())).find(row => row.name === name);
         const canonical = `/${name}${args ? ' ' + args : ''}`;
         const text = inputText ?? (this.draft.trim() === canonical.trim() ? this.draft : canonical);
         if (!this.snapshot().canSend || !command || command.disabled || args.length > 128 * 1024 || text.length > 1024 * 1024) throw new FSError('EINVAL', 'Unknown native command');
         if (!this.session && command.kind !== 'prompt') throw new FSError('ECAPABILITY', 'Native command requires a session');
-        const selected = requested && command.kind === 'prompt' ? validateAvailableSelection(requested, await this.models()) : undefined;
+        const selected = requested && command.kind === 'prompt' ? validateAvailableSelection(requested, await this.beforeSubmission(() => this.models())) : undefined;
         if (!this.snapshot().canSend) throw new FSError('EBUSY', 'Native command unavailable');
         if (!this.draft) this.setDraft(text, []);
         this.startSubmission(submissionId);
@@ -159,10 +159,28 @@ export class HarnessConversation implements HarnessConversationPort {
     private acceptSubmission(turnId?: string): void {
         if (this.submission?.status === 'pending') this.submission = {id: this.submission.id, status: 'accepted', turnId};
     }
-    private rejectSubmission(): void {
-        if (this.submission?.status === 'pending') this.submission = {id: this.submission.id, status: 'rejected'};
+    private rejectSubmission(code?: string): void {
+        if (this.submission?.status === 'pending') this.submission = {id: this.submission.id, status: 'rejected', ...(code ? {code} : {})};
+    }
+    private async beforeSubmission<T>(read: () => Promise<T>): Promise<T> {
+        try { return await read(); }
+        catch (error) {
+            if (error && typeof error === 'object') Object.assign(error, {outcome: 'not-committed'});
+            throw error;
+        }
     }
     private async prepareSession(): Promise<void> {
+        try { await this.prepareNativeSession(); }
+        catch (error) {
+            // Preparation never dispatches the user's turn or command.
+            if (!this.pending) {
+                this.rejectSubmission(); await this.save();
+                if (error && typeof error === 'object') Object.assign(error, {outcome: 'not-committed'});
+            }
+            throw error;
+        }
+    }
+    private async prepareNativeSession(): Promise<void> {
         if (!this.session) this.session = (await this.native('create', options => this.client.create(this.profile.id, this.workspaceId, options))).session;
         else if (this.client.inspect) this.session = (await this.client.inspect(this.profile.id, this.session.id, this.options())).session;
         if (!this.session.owned) this.session = (await this.native('resume', options => this.client.resume(this.profile.id, this.session!.id, options))).session;
@@ -207,7 +225,7 @@ export class HarnessConversation implements HarnessConversationPort {
             return result;
         } catch (error) {
             if ((error as {outcome?: string})?.outcome === 'not-committed') {
-                this.rejectSubmission(); this.pending = undefined; await this.save();
+                this.rejectSubmission((error as {code?: string; remoteCode?: string}).remoteCode ?? (error as {code?: string}).code); this.pending = undefined; await this.save();
             } else if (this.pending && error && typeof error === 'object') Object.assign(error, {outcome: 'unknown'});
             throw error;
         }
@@ -337,11 +355,11 @@ export class HarnessConversation implements HarnessConversationPort {
     }
     async send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection, submissionId?: string) {
         const requested = selection ? validateModelSelection(selection) : undefined;
-        if (!this.loaded || Date.now() - this.observedAt > 30_000) await this.read();
+        if (!this.loaded || Date.now() - this.observedAt > 30_000) await this.beforeSubmission(() => this.read());
         if (!text.trim() || !this.snapshot().canSend) throw new FSError('EBUSY', 'Conversation cannot send');
         if (attachments?.some(file => !this.profile.capabilities.attachments?.includes(file.kind))) throw new FSError('ECAPABILITY', 'Attachment kind unavailable');
         const prepared = validateAttachments(attachments);
-        const selected = requested ? validateAvailableSelection(requested, await this.models()) : undefined;
+        const selected = requested ? validateAvailableSelection(requested, await this.beforeSubmission(() => this.models())) : undefined;
         if (!this.snapshot().canSend) throw new FSError('EBUSY', 'Conversation cannot send');
         this.submittedTurnId = undefined;
         this.setDraft(text, prepared);
@@ -428,6 +446,7 @@ export class HarnessConversation implements HarnessConversationPort {
         }
         if (submissionId && this.submission?.id !== submissionId) return this.snapshot();
         const receipt = await this.client.operation(this.profile.id, this.pending.requestId, {...this.options(), epoch: this.pending.epoch});
+        if (receipt.requestId !== this.pending.requestId) throw new FSError('EIO', 'Mismatched harness receipt');
         if (receipt.outcome === 'unknown') return this.snapshot();
         const result = receipt.result as {session?: HarnessSession; turnId?: string; deletedSessionIds?: string[]} | undefined;
         if (receipt.outcome === 'committed') {
@@ -448,7 +467,7 @@ export class HarnessConversation implements HarnessConversationPort {
                 this.acceptDraft(this.pending);
             }
         }
-        if (receipt.outcome !== 'committed' || ['create', 'resume'].includes(this.pending.operation)) this.rejectSubmission();
+        if (receipt.outcome !== 'committed' || ['create', 'resume'].includes(this.pending.operation)) this.rejectSubmission(receipt.code);
         const pending = this.pending; this.pending = undefined;
         try { await this.save(); } catch (error) { this.pending = pending; throw error; }
         return this.read();
@@ -461,7 +480,7 @@ export class HarnessConversation implements HarnessConversationPort {
         if (receipt.outcome === 'unknown') return;
         const result = receipt.result as {turnId?: unknown} | undefined;
         const turnId = typeof result?.turnId === 'string' ? result.turnId : undefined;
-        this.submission = {id, status: receipt.outcome === 'committed' ? 'accepted' : 'rejected', turnId};
+        this.submission = {id, status: receipt.outcome === 'committed' ? 'accepted' : 'rejected', turnId, ...(receipt.code ? {code: receipt.code} : {})};
         if (turnId) this.submittedTurnId = turnId;
         await this.save();
     }

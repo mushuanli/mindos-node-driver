@@ -1,33 +1,107 @@
 {
   "name": "@itookit/mindos-node-client",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "Platform-independent client for mindos-node: controlled files, projects, sync, processes and native AI harness sessions.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts", "./harness": "./src/harness/index.ts", "./sync": "./src/sync/client.ts", "./authorization": "./src/authorization.ts" },
-  "scripts": { "typecheck": "tsc --noEmit", "test": "vitest run", "build": "tsup", "prepublishOnly": "pnpm build" },
-  "dependencies": { "@itookit/vfs-core": "5.3.3", "@itookit/vfs-sync": "0.1.1", "@modelcontextprotocol/client": "2.0.0" },
-  "devDependencies": { "typescript": "^5.9.3", "vitest": "^3.2.4", "tsup": "^8.5.1", "@types/node": "^20.19.25" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./harness": "./src/harness/index.ts",
+    "./sync": "./src/sync/client.ts",
+    "./authorization": "./src/authorization.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsup",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@itookit/vfs-core": "5.3.3",
+    "@itookit/vfs-sync": "0.1.1",
+    "@modelcontextprotocol/client": "2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "tsup": "^8.5.1",
+    "@types/node": "^20.19.25"
+  },
   "publishConfig": {
     "access": "public",
     "main": "./dist/index.cjs",
     "module": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {
-      ".": { "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }, "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" } },
-      "./harness": { "import": { "types": "./dist/harness/index.d.ts", "default": "./dist/harness/index.js" }, "require": { "types": "./dist/harness/index.d.cts", "default": "./dist/harness/index.cjs" } },
-      "./authorization": { "import": { "types": "./dist/authorization.d.ts", "default": "./dist/authorization.js" }, "require": { "types": "./dist/authorization.d.cts", "default": "./dist/authorization.cjs" } },
-      "./sync": { "import": { "types": "./dist/sync/client.d.ts", "default": "./dist/sync/client.js" }, "require": { "types": "./dist/sync/client.d.cts", "default": "./dist/sync/client.cjs" } }
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      },
+      "./harness": {
+        "import": {
+          "types": "./dist/harness/index.d.ts",
+          "default": "./dist/harness/index.js"
+        },
+        "require": {
+          "types": "./dist/harness/index.d.cts",
+          "default": "./dist/harness/index.cjs"
+        }
+      },
+      "./authorization": {
+        "import": {
+          "types": "./dist/authorization.d.ts",
+          "default": "./dist/authorization.js"
+        },
+        "require": {
+          "types": "./dist/authorization.d.cts",
+          "default": "./dist/authorization.cjs"
+        }
+      },
+      "./sync": {
+        "import": {
+          "types": "./dist/sync/client.d.ts",
+          "default": "./dist/sync/client.js"
+        },
+        "require": {
+          "types": "./dist/sync/client.d.cts",
+          "default": "./dist/sync/client.cjs"
+        }
+      }
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "license": "MIT",
   "author": "lizlok@gmail.com",
-  "keywords": ["itookit", "mindos", "mindos-node", "mcp", "filesystem", "sync", "harness"],
-  "repository": { "type": "git", "url": "git+https://github.com/mushuanli/piagent-driver.git" },
-  "bugs": { "url": "https://github.com/mushuanli/piagent-driver/issues" },
+  "keywords": [
+    "itookit",
+    "mindos",
+    "mindos-node",
+    "mcp",
+    "filesystem",
+    "sync",
+    "harness"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mushuanli/piagent-driver.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mushuanli/piagent-driver/issues"
+  },
   "homepage": "https://github.com/mushuanli/piagent-driver#readme",
   "packageManager": "pnpm@10.20.0",
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

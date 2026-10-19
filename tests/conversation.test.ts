@@ -520,6 +520,48 @@ it('retains input and never starts a turn when another native writer prevents re
     expect(client.turn).not.toHaveBeenCalled(); await view.close();
 });
 
+it.each(['send', 'command'] as const)('rejects a %s submission when read-only preparation fails before dispatch', async operation => {
+    const client = peer();
+    client.inspect = vi.fn(async () => {throw new TypeError('Load failed');});
+    client.commands = vi.fn(async () => [{name: 'compact', description: 'Compact', kind: 'action' as const}]);
+    client.command = vi.fn();
+    let saved: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => saved, save: async (record: HarnessRecovery) => {saved = structuredClone(record);}};
+    const source = {...profile, capabilities: {...profile.capabilities, slashCommands: true}};
+    const view = new HarnessConversation(client, source, 'p', 's', true, journal); await view.read();
+    const result = operation === 'send' ? view.send('Keep input', [], undefined, 'before-dispatch')
+        : view.command('compact', '', undefined, '/compact', 'before-dispatch');
+    await expect(result).rejects.toMatchObject({outcome: 'not-committed'});
+    expect(saved).toMatchObject({submission: {id: 'before-dispatch', status: 'rejected'}});
+    expect(view.snapshot()).toMatchObject({pending: false, canSend: true});
+    expect(client.turn).not.toHaveBeenCalled(); expect(client.command).not.toHaveBeenCalled();
+    await view.close();
+    const reopened = new HarnessConversation(client, source, 'p', 's', true, journal);
+    expect((await reopened.read()).submission).toMatchObject({status: 'rejected'}); await reopened.close();
+});
+
+it.each(['send', 'command'] as const)('reports initial history failure before %s as not committed', async operation => {
+    const client = peer(); vi.mocked(client.read).mockRejectedValue(new TypeError('Load failed'));
+    const view = new HarnessConversation(client, profile, 'p', 's');
+    const result = operation === 'send' ? view.send('Keep input', [], undefined, 'before-read')
+        : view.command('compact', '', undefined, '/compact', 'before-read');
+    await expect(result).rejects.toMatchObject({outcome: 'not-committed'});
+    expect(client.resume).not.toHaveBeenCalled(); expect(client.turn).not.toHaveBeenCalled(); await view.close();
+});
+
+it('recovers a rejected preparation receipt with its native error without dispatching the prompt', async () => {
+    const client = peer(); vi.mocked(client.read).mockResolvedValue({session: {...session, owned: false}, turns: []});
+    let saved: HarnessRecovery | undefined;
+    const journal = {epoch: 'e', load: async () => saved, save: async (record: HarnessRecovery) => {saved = structuredClone(record);}};
+    const view = new HarnessConversation(client, profile, 'p', 's', true, journal); await view.read();
+    vi.mocked(client.resume).mockRejectedValue(Object.assign(new Error('Load failed'), {outcome: 'unknown'}));
+    await expect(view.send('Keep input', [], undefined, 'prompt-id')).rejects.toThrow('Load failed');
+    const requestId = saved!.pending!.requestId;
+    vi.mocked(client.operation).mockResolvedValue({requestId, outcome: 'not-committed', code: 'HARNESS_SESSION_BUSY'});
+    expect((await view.reconcile('prompt-id')).submission).toEqual({id: 'prompt-id', status: 'rejected', code: 'HARNESS_SESSION_BUSY'});
+    expect(client.turn).not.toHaveBeenCalled(); await view.close();
+});
+
 it.each(['missing', 'throws'])('creates and sends a native conversation through internal request IDs when UUID %s', async mode => {
     const original = globalThis.crypto;
     vi.stubGlobal('crypto', {getRandomValues: original.getRandomValues.bind(original),

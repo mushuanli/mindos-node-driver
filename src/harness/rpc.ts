@@ -8,7 +8,7 @@ export interface HarnessRpc {
 }
 
 export function createHarnessRpc(endpoint: string, fetch: typeof globalThis.fetch, exactEndpoint = false): HarnessRpc {
-    const client = new Client({ name: 'itookit-mindos-node-client', version: '0.1.0' }, {
+    const client = new Client({ name: 'itookit-mindos-node-client', version: '0.3.0' }, {
         supportedProtocolVersions: ['2026-07-28'], versionNegotiation: { mode: { pin: '2026-07-28' } },
         inputRequired: { autoFulfill: false },
     });

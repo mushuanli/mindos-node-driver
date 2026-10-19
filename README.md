@@ -121,6 +121,8 @@ Codex profile 声明 rename/archive/unarchive 与 attachments 能力。`harness.
 
 `HarnessConversation.snapshot().submittedTurnId` 保留本视图最近一次已确认发送的原生轮次身份，历史尚未回显时也可供界面替换临时卡片；开始新发送时重置。只有 turn 成功或对应 committed 回执才设置，resume/create 成功不算消息已提交。原生 `HARNESS_SESSION_BUSY` 拒绝恢复时保留草稿，不调用 turn。
 
+历史、模型目录、profile 或会话检查在提交前失败时，返回 `not-committed`，不能留下待确认的消息提交。原生请求已经发出但响应丢失时，保留原 requestId/epoch 并查询回执，不重放。被拒绝的 submission 可携带安全 `code`，使跨视图核对后仍能展示原生写锁原因。
+
 ### Native usage
 
 `HarnessSession.usage` and conversation snapshots carry validated native transcript usage from mindos-node 0.1.5+. `HarnessClient.usage(profileId, sessionId)` queries the read-only tool directly; ordinary viewers reuse the usage piggybacked on history/inspection. Unsupported older servers leave usage absent. The client validates session identity, safe nonnegative token counts, unique entries and matching totals. Input/cache buckets are disjoint, reasoning is already part of output. This package has no model catalog, pricing fallback or billing policy; hosts may decorate snapshots with their own estimates.

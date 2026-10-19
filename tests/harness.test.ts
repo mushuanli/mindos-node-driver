@@ -48,6 +48,14 @@ it('keeps explicit refusal separate from unknown outcomes',async () => {
     await expect(client.resume('codex','s')).rejects.toMatchObject({ outcome:'not-committed',code:'EACCES' });
 });
 
+it('reports failed profile discovery as not sent and never dispatches the mutation', async () => {
+    const call = vi.fn(async () => {throw new TypeError('Load failed');});
+    const client = new MCPHarnessClient({call, close: vi.fn()});
+    await expect(client.resume('codex', 's', {requestId: 'before-dispatch'}))
+        .rejects.toMatchObject({outcome: 'not-committed', requestId: 'before-dispatch'});
+    expect(call).toHaveBeenCalledOnce(); expect(call.mock.calls[0][0]).toBe('harness_profiles');
+});
+
 it('rejects malformed session, history, and event responses',() => {
     expect(() => validatePage({ sessions:[{...session,resumable:'true'}],nextCursor:null })).toThrow();
     expect(() => validateHistory({ session,turns:{} })).toThrow();
