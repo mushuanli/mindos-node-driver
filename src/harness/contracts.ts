@@ -27,7 +27,11 @@ export interface HarnessEvents {
     epoch: string; cursor: number; gap: boolean; events: HarnessEvent[]; requests: Array<HarnessEvent['message']>;
 }
 export interface HarnessPage { sessions: HarnessSession[]; nextCursor: string | null }
-export interface HarnessHistory { session: HarnessSession; turns: unknown[] | null; nextCursor?: string | null }
+export interface HarnessHistory {
+    session: HarnessSession; turns: unknown[] | null; nextCursor?: string | null;
+    /** Native snapshot boundary; resume events after the items already included in history. */
+    eventCursor?: {after: number; eventEpoch: string};
+}
 export interface HarnessEventsOptions extends OperationOptions { toolDetail?: 'summary' }
 export interface HarnessHistoryOptions extends HarnessEventsOptions { cursor?: string }
 export interface HarnessReceipt { requestId: string; outcome: 'committed' | 'not-committed' | 'unknown'; result?: unknown; code?: string }

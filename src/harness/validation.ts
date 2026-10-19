@@ -62,6 +62,10 @@ export function validatePage(value: unknown): HarnessPage {
 export function validateHistory(value: unknown): HarnessHistory {
     const v = record(value), session = validateSession(v.session);
     if (!(v.turns === null || Array.isArray(v.turns)) || !(v.nextCursor === undefined || v.nextCursor === null || typeof v.nextCursor === 'string')) throw invalid();
+    if (v.eventCursor !== undefined) {
+        const cursor = record(v.eventCursor);
+        if (!Number.isSafeInteger(cursor.after) || (cursor.after as number) < 0 || typeof cursor.eventEpoch !== 'string' || !cursor.eventEpoch) throw invalid();
+    }
     return {...v, session} as unknown as HarnessHistory;
 }
 export function validateEvents(value: unknown): HarnessEvents {

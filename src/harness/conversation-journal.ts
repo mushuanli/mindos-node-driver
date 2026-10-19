@@ -1,6 +1,7 @@
 import type { HarnessAttachment, HarnessCommandResult } from './contracts';
 import {FSError} from '@itookit/vfs-core';
 export interface HarnessRecovery {
+    responses?: Array<{id: string | number; requestId: string; epoch: string}>;
     submission?: {id: string; status: 'pending' | 'accepted' | 'rejected'; turnId?: string};
     submittedTurnId?: string;
     deletedSessionIds?: string[];

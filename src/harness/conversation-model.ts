@@ -1,4 +1,4 @@
-import type { HarnessHistory, HarnessEvent } from './contracts';
+import type { HarnessHistory } from './contracts';
 import { FSError } from '@itookit/vfs-core';
 import { toolSummary, type ToolOperation } from './tool-summary';
 export interface HarnessMessage {
@@ -9,7 +9,8 @@ export interface HarnessMessage {
     turnId?: string; name?: string; input?: string; inputLanguage?: 'bash' | 'json' | 'text';
     timestamp?: number; paths?: string[]; operation?: ToolOperation; commandPreview?: string;
 }
-export interface HarnessRequest { id: string | number; kind: 'approval' | 'input' | 'unsupported'; detail: string; questions?: Array<{id: string; question: string; options?: Array<{label: string}>}> }
+export {nativeRequest} from './interactions';
+export type {HarnessRequest} from './interactions';
 export function nativeMessage(value: unknown, fallback: string, turnId?: string, at?: number): HarnessMessage | undefined {
     if (!value || typeof value !== 'object') return;
     const item = value as Record<string, unknown>, type = String(item.type ?? '');
@@ -49,14 +50,6 @@ export function historyMessages(history: HarnessHistory): HarnessMessage[] {
         const at = messageTime(row.createdAt ?? row.startedAt);
         return Array.isArray(row?.items) ? row.items.flatMap((item, i) => nativeMessage(item, `history:${turnId ?? t}:${i}`, turnId, at) ?? []) : [];
     }));
-}
-export function nativeRequest(request: HarnessEvent['message']): HarnessRequest[] {
-    if (request.id === undefined) return [];
-    const kind = ['item/commandExecution/requestApproval','item/fileChange/requestApproval'].includes(request.method) ? 'approval'
-        : request.method === 'item/tool/requestUserInput' ? 'input' : 'unsupported';
-    const raw = request.params?.questions;
-    const questions = Array.isArray(raw) ? raw.filter(q => q && typeof q.id === 'string' && typeof q.question === 'string').map(q => ({id: q.id, question: q.question, options: Array.isArray(q.options) ? q.options.filter((o: unknown) => o && typeof (o as {label?: unknown}).label === 'string') : undefined})) : undefined;
-    return [{ id: request.id, kind, detail: JSON.stringify(request.params ?? {}, null, 2), questions }];
 }
 
 /** Reject capacity overflow explicitly rather than silently deleting requested history. */

@@ -28,7 +28,7 @@ export class HarnessConversation implements HarnessConversationPort {
     }
     async command(name: string, args = '', selection?: HarnessModelSelection, inputText?: string, submissionId?: string) {
         const requested = selection ? validateModelSelection(selection) : undefined;
-        if (!this.loaded) await this.read();
+        if (!this.loaded || Date.now() - this.observedAt > 30_000) await this.read();
         if (!this.snapshot().canSend || !this.client.command) throw new FSError('ECAPABILITY', 'Native command unavailable');
         const command = (await this.commands()).find(row => row.name === name);
         const canonical = `/${name}${args ? ' ' + args : ''}`;
@@ -50,6 +50,8 @@ export class HarnessConversation implements HarnessConversationPort {
     private session?: HarnessSession;
     private messages: HarnessMessage[] = [];
     private requests: HarnessRequest[] = [];
+    private responses: NonNullable<import('./conversation-journal').HarnessRecovery['responses']> = [];
+    private responseBusy = new Set<string>();
     private cursor?: {after: number; eventEpoch: string};
     private readonly completed = new Set<string>();
     private readonly completedItems = new Set<string>();
@@ -90,12 +92,13 @@ export class HarnessConversation implements HarnessConversationPort {
         const observation = harnessObservation(this.session, this.requests, {observedAt: this.observedAt, source: this.source,
             connection: this.disconnected || this.nativeDisconnected ? 'offline' : 'online',
             refreshError: this.refreshError, stale: !!this.refreshError || Date.now() - this.observedAt > 30_000,
-            receiptUnknown: !!this.pending});
+            receiptUnknown: !!this.pending || !!this.responses.length});
         const available = observation.connection === 'online' && !observation.stale;
         const controllable = !this.deletedSessionIds.length && !this.lifetime.signal.aborted && available && this.writable && !this.busy && !this.pending && !!this.session?.owned;
         const manageable = !this.deletedSessionIds.length && this.loaded && !!this.session && !this.lifetime.signal.aborted && available && this.writable && !this.busy && !this.pending;
         observation.canInterrupt = controllable && !!this.session?.activeTurnId && this.profile.capabilities.interrupt;
-        observation.canRespond = controllable && !!this.requests.length && this.profile.capabilities.interactions;
+        observation.canRespond = !this.deletedSessionIds.length && !this.lifetime.signal.aborted && available && this.writable
+            && this.pending?.operation !== 'respond' && !!this.session?.owned && this.profile.capabilities.interactions && this.requests.some(r => r.kind !== 'unsupported' && !this.responses.some(p => p.id === r.id));
         return {...(this.profile.capabilities.models ? {supportsModels: true} : {}), ...(this.profile.capabilities.slashCommands ? {supportsSlashCommands: true} : {}), ...(this.nativeCommands.length ? {slashCommands: this.availableCommands()} : {}), usage: this.session?.usage, usageUnavailable: this.session?.usageUnavailable, observation, submission: this.submission ? {...this.submission} : undefined, submittedTurnId: this.submittedTurnId, draft: this.draft, draftAttachments: structuredClone(this.draftAttachments), sessionId: this.navigationSessionId ?? this.session?.id, title: this.session?.title.trim() || this.profile.kind,
             attachments: this.writable ? this.profile.capabilities.attachments : undefined,
             deletedSessionIds: this.deletedSessionIds.slice(),
@@ -107,13 +110,13 @@ export class HarnessConversation implements HarnessConversationPort {
             canUnarchive: manageable && !!this.session?.archived && !!this.client.archive && !!this.profile.capabilities.unarchive,
             createdAt: this.session?.createdAt, updatedAt: this.session?.updatedAt,
             branchName: this.session?.branchName ?? (this.session?.parentSessionId ? undefined : 'main'),
-            messages: mergeMessages(this.messages, this.commandMessages()).map(m => ({...m})), requests: this.requests.map(r => ({...r})),
+            messages: mergeMessages(this.messages, this.commandMessages()).map(m => ({...m})), requests: this.requests.map(r => ({...r, responding: this.responses.some(p => p.id === r.id)})),
             hasEarlier: !!this.earlier,
             canFork: !this.deletedSessionIds.length && !this.session?.archived && !this.lifetime.signal.aborted && this.loaded && this.writable && !this.busy && !active && !this.pending && !this.disconnected && !this.nativeDisconnected && !this.refreshError && !this.navigationSessionId && !!this.session && this.messages.some(message => message.role === 'user' || message.role === 'assistant') && !!this.client.fork && !!this.profile.capabilities.fork && this.session.forkable !== false,
-            canSend: !this.deletedSessionIds.length && !this.session?.archived && !this.navigationSessionId && this.loaded && !this.lifetime.signal.aborted && this.writable && !this.busy && !active && !this.pending && !this.disconnected && !this.nativeDisconnected && !this.refreshError && (this.session ? this.session.resumable && (this.session.owned || this.profile.capabilities.resume) : this.profile.capabilities.create),
+            canSend: !this.deletedSessionIds.length && !this.session?.archived && !this.navigationSessionId && this.loaded && !this.lifetime.signal.aborted && this.writable && !this.busy && !active && !this.pending && !this.responses.length && !this.requests.length && !this.disconnected && !this.nativeDisconnected && !this.refreshError && (this.session ? this.session.resumable && (this.session.owned || this.profile.capabilities.resume) : this.profile.capabilities.create),
             canInterrupt: observation.canInterrupt,
             canRespond: observation.canRespond,
-            active, pending: !!this.pending, disconnected: this.disconnected || this.nativeDisconnected, gap: this.gap};
+            active, pending: !!this.pending || !!this.responses.length, disconnected: this.disconnected || this.nativeDisconnected, gap: this.gap};
     }
     private async restore() {
         if (this.loaded) return;
@@ -121,6 +124,7 @@ export class HarnessConversation implements HarnessConversationPort {
         if (record?.sessionId && !this.session) this.session = {id: record.sessionId, title: record.sessionId, cwd: null, status: null, updatedAt: null, resumable: false};
         this.deletedSessionIds = record?.deletedSessionIds ?? [];
         this.pending = record?.pending; this.draft = record?.draft ?? '';
+        this.responses = record?.responses?.map(row => ({...row})) ?? [];
         this.submittedTurnId = record?.submittedTurnId;
         this.submission = validateSubmission(record?.submission);
         this.draftRevision = record?.draftRevision ?? 0;
@@ -128,7 +132,7 @@ export class HarnessConversation implements HarnessConversationPort {
         this.draftAttachments = validateAttachments(record?.draftAttachments); this.loaded = true;
     }
     private save(sessionId = this.session?.id): Promise<void> {
-        const record = {sessionId, submission: this.submission ? {...this.submission} : undefined, submittedTurnId: this.submittedTurnId, deletedSessionIds: this.deletedSessionIds, pending: this.pending, draft: this.draft,
+        const record = {sessionId, responses: this.responses.map(row => ({...row})), submission: this.submission ? {...this.submission} : undefined, submittedTurnId: this.submittedTurnId, deletedSessionIds: this.deletedSessionIds, pending: this.pending, draft: this.draft,
             draftAttachments: this.draftAttachments, draftRevision: this.draftRevision, commandResults: this.commandResults};
         const write = this.writes.then(() => this.journal?.save(record));
         this.writes = write.catch(() => {}); return write;
@@ -160,6 +164,7 @@ export class HarnessConversation implements HarnessConversationPort {
     }
     private async prepareSession(): Promise<void> {
         if (!this.session) this.session = (await this.native('create', options => this.client.create(this.profile.id, this.workspaceId, options))).session;
+        else if (this.client.inspect) this.session = (await this.client.inspect(this.profile.id, this.session.id, this.options())).session;
         if (!this.session.owned) this.session = (await this.native('resume', options => this.client.resume(this.profile.id, this.session!.id, options))).session;
     }
     private async refreshSubmitted(): Promise<HarnessConversationSnapshot> {
@@ -216,6 +221,7 @@ export class HarnessConversation implements HarnessConversationPort {
             const messages = historyMessages(history);
             this.messages = this.expandedHistory ? mergeMessages(this.messages, messages) : messages;
             this.session = {...history.session, lastTurnResult: history.session.lastTurnResult ?? this.session.lastTurnResult};
+            if (history.eventCursor) this.cursor = {...history.eventCursor};
             this.observedAt = Date.now(); this.source = 'history'; this.gap = false;
             if (!this.expandedHistory) { this.earlier = history.nextCursor ?? undefined; this.historyCursors.clear(); }
             for (const message of this.messages) if (message.status === 'completed') this.completedItems.add(message.id);
@@ -223,6 +229,13 @@ export class HarnessConversation implements HarnessConversationPort {
         }
         this.disconnected = this.nativeDisconnected = false;
         this.refreshError = undefined; this.errors.clear('history');
+        if (this.session) {
+            try {
+                const page = await this.client.events(this.profile.id, this.cursor, {...this.options(), toolDetail: 'summary'});
+                this.requests = page.requests.filter(r => r.params?.threadId === this.session!.id).flatMap(nativeRequest);
+                await this.reconcileResponses();
+            } catch (error) {this.refreshError = this.errors.record('events', error);}
+        }
         return this.snapshot();
     }
     async loadEarlier() {
@@ -253,14 +266,20 @@ export class HarnessConversation implements HarnessConversationPort {
             const page = await this.client.events(this.profile.id, this.cursor, {...this.options(), toolDetail: 'summary'});
             this.disconnected = false;
             const repair = page.gap || !!this.cursor && this.cursor.eventEpoch !== page.epoch;
+            if (repair && this.busy) {
+                this.consume({...page, events: []}); this.gap = true;
+                this.errors.clear('events');
+                return this.snapshot();
+            }
             if (repair) { stage = 'history'; await this.read(); this.gap = true; }
             stage = 'projection';
-            this.consume(repair ? {...page, events: []} : page);
-            stage = 'inspect'; await this.inspect(page);
+            if (!repair) this.consume(page);
+            if (!repair && !this.busy) {stage = 'inspect'; await this.inspect(page);}
             if (!repair && page.events.some(e => e.message.method === 'turn/completed' && e.message.params?.threadId === this.session?.id)) {
                 stage = 'history'; await this.read();
             }
-            this.cursor = {after: page.cursor, eventEpoch: page.epoch};
+            if (!this.cursor || this.cursor.eventEpoch !== page.epoch || this.cursor.after < page.cursor)
+                this.cursor = {after: page.cursor, eventEpoch: page.epoch};
             this.refreshError = undefined;
             for (const recovered of ['events', 'projection', 'inspect', 'history']) this.errors.clear(recovered);
         } catch (error) {
@@ -318,7 +337,7 @@ export class HarnessConversation implements HarnessConversationPort {
     }
     async send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection, submissionId?: string) {
         const requested = selection ? validateModelSelection(selection) : undefined;
-        if (!this.loaded) await this.read();
+        if (!this.loaded || Date.now() - this.observedAt > 30_000) await this.read();
         if (!text.trim() || !this.snapshot().canSend) throw new FSError('EBUSY', 'Conversation cannot send');
         if (attachments?.some(file => !this.profile.capabilities.attachments?.includes(file.kind))) throw new FSError('ECAPABILITY', 'Attachment kind unavailable');
         const prepared = validateAttachments(attachments);
@@ -366,9 +385,34 @@ export class HarnessConversation implements HarnessConversationPort {
         });
     }
     async respond(id: string | number, response: Record<string, unknown>) {
-        if (this.lifetime.signal.aborted || !this.writable || this.busy || this.pending || !this.session?.owned || !this.profile.capabilities.interactions || !this.requests.some(r => r.id === id))
+        const request = this.requests.find(r => r.id === id && r.kind !== 'unsupported');
+        if (this.lifetime.signal.aborted || !this.writable || this.pending?.operation === 'respond' || !this.session?.owned || !this.profile.capabilities.interactions || !request || this.responses.some(p => p.id === id))
             throw new FSError('EACCES', 'Interaction no longer pending or not owned');
-        return this.mutate(async () => { await this.native('respond', options => this.client.respond(this.profile.id, id, response, options)); this.requests = this.requests.filter(r => r.id !== id); });
+        const epoch = this.journal?.epoch ?? (await this.client.profiles(this.options())).epoch;
+        if (this.responses.some(p => p.id === id)) throw new FSError('EBUSY', 'Response already pending');
+        const pending = {id, epoch, requestId: createRequestId()};
+        this.responses.push(pending); this.responseBusy.add(pending.requestId);
+        let sent = false;
+        try {
+            await this.save();
+            sent = true;
+            await this.client.respond(this.profile.id, id, response, {...this.options(), ...pending});
+            this.requests = this.requests.filter(r => r.id !== id);
+            this.responses = this.responses.filter(p => p !== pending); await this.save();
+        } catch (error) {
+            if (!sent || (error as {outcome?: string})?.outcome === 'not-committed') {this.responses = this.responses.filter(p => p !== pending); await this.save();}
+            throw error;
+        } finally {this.responseBusy.delete(pending.requestId);}
+        return this.snapshot();
+    }
+    private async reconcileResponses(): Promise<void> {
+        for (const pending of [...this.responses]) {
+            if (this.responseBusy.has(pending.requestId)) continue;
+            const receipt = await this.client.operation(this.profile.id, pending.requestId, {...this.options(), epoch: pending.epoch});
+            if (receipt.outcome === 'unknown') continue;
+            if (receipt.outcome === 'committed') this.requests = this.requests.filter(r => r.id !== pending.id);
+            this.responses = this.responses.filter(p => p !== pending); await this.save();
+        }
     }
     private async mutate(action: () => Promise<void>) {
         this.busy = true;
@@ -377,6 +421,7 @@ export class HarnessConversation implements HarnessConversationPort {
     }
     async reconcile(submissionId?: string): Promise<HarnessConversationSnapshot> {
         await this.restore();
+        await this.reconcileResponses();
         if (!this.pending) {
             if (submissionId && (this.submission?.id !== submissionId || this.submission.status === 'pending')) await this.reconcileSubmission(submissionId);
             return this.read();

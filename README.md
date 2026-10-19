@@ -93,6 +93,10 @@ itookit 内自动发现 `tools/pi-agent`。文件进程隔离测试还需 `PI_AG
 
 ## 只读状态与搜索
 
+交互请求保留选项说明、多选、自由回答与密码输入语义，未知结构显式投影为 unsupported。初次 read 会取得未解决请求，重新打开网页仍显示待答框。respond 有独立于 turn/command 的回执记录，允许在启动响应返回前回答审批；未知结果只核对原 requestId，恢复记录不存回答正文。应用宿主应让事件读取和回复穿过等待中的启动调用，普通写操作仍保持串行。
+
+原生历史可携带 `eventCursor: {after, eventEpoch}`，表示快照已包含的事件边界。HarnessConversation 从该边界读取后续增量，事件缺口修复后不倒退游标；旧服务未提供该字段时沿用原有兼容路径。执行中的 Codex 快照由服务端读取原生运行状态，避免只读取尚未写入完整回答的历史文件。
+
 多关键字查询以空格/制表符分隔，按不区分大小写、顺序不限的字面 AND 匹配；文件内容以命中行为单位，原生会话内容以消息为单位。文件 discovery metadata 与原生 profile 分别用 `searchKeywords: true` 声明该语义；driver 在含分词空白的查询发送前核对能力，避免旧节点静默按整段短语搜索。显式换行保留原有字面多行语义。
 
 `adapter.observeHarness(projects.harness(project, {readOnly: true}), false)` 创建共享 `HarnessStatusObserver`，poll 返回 profile/session 的 `HarnessObservation`；仅使用有界列表和事件，不读取每行历史、不 resume。execution、最近结果、连接、时效和控制能力分别返回。`close()` 释放底层客户端，关闭界面不停止原生 turn。
