@@ -3,7 +3,7 @@ import { nativeRequest } from './conversation-model';
 import { applyHarnessStatus, harnessObservation, type HarnessObservation } from './state';
 import { ObservationErrors, connectionLost } from './observation-errors';
 
-export interface HarnessStatusRow { profileId: string; sessionId: string; observation: HarnessObservation; title?: string; archived?: boolean; fileVersion?: string }
+export interface HarnessStatusRow { profileId: string; sessionId: string; observation: HarnessObservation; title?: string; archived?: boolean; fileVersion?: string; truncated?: boolean }
 export interface HarnessStatusPort {
     fileVersion?(): string | undefined;
     poll(options?: import('@itookit/vfs-core').OperationOptions): Promise<HarnessStatusRow[]>;
@@ -18,6 +18,7 @@ interface ProfileState {
     fileVersion?: string;
     nativeDisconnected: Set<string>;
     errors: ObservationErrors;
+    truncated?: boolean;
 }
 
 /** One bounded metadata/event stream per project, never reads histories or adopts threads. */
@@ -49,7 +50,8 @@ export class HarnessStatusObserver implements HarnessStatusPort {
         }
         for (const state of this.profiles.values()) await this.updateProfile(state, options);
         return [...this.profiles.values()].flatMap(state => [...state.observations].map(([sessionId, observation]) =>
-            ({profileId: state.profile.id, sessionId, observation, title: state.sessions.get(sessionId)?.title, archived: state.sessions.get(sessionId)?.archived, fileVersion: state.fileVersion})));
+            ({profileId: state.profile.id, sessionId, observation, title: state.sessions.get(sessionId)?.title, archived: state.sessions.get(sessionId)?.archived, fileVersion: state.fileVersion,
+                ...(state.truncated ? {truncated: true} : {})})));
     }
     private async watchDirectory(options?: import('@itookit/vfs-core').OperationOptions): Promise<void> {
         try {
@@ -81,28 +83,37 @@ export class HarnessStatusObserver implements HarnessStatusPort {
         }
     }
     private async list(state: ProfileState, options?: import('@itookit/vfs-core').OperationOptions) {
-        const seen = new Set<string>();
+        const listed = await this.readList(state.profile.id, options);
+        const sessions = listed.complete ? new Map<string, HarnessSession>() : new Map(state.sessions);
+        const observations = listed.complete ? new Map<string, HarnessObservation>() : new Map([...state.observations].map(([id, prior]) =>
+            [id, {...prior, stale: true, refreshError: {stage: 'list', code: 'LIST_TRUNCATED'}, canInterrupt: false, canRespond: false}]));
+        for (const [id, session] of listed.sessions) {
+            // A partial enumeration cannot evict known sessions as if they were deleted.
+            if (!sessions.has(id) && sessions.size >= 512) continue;
+            const prior = state.sessions.get(id);
+            const next = {...session, lastTurnResult: session.lastTurnResult ?? prior?.lastTurnResult,
+                activeTurnId: session.activeTurnId ?? (session.status === 'active' ? prior?.activeTurnId : null)};
+            sessions.set(id, next); state.nativeDisconnected.delete(id);
+            observations.set(id, harnessObservation(next, [], {source: 'list', observedAt: this.now()}));
+        }
+        state.sessions = sessions; state.observations = observations; state.truncated = !listed.complete;
+        for (const id of state.nativeDisconnected) if (!sessions.has(id)) state.nativeDisconnected.delete(id);
+        state.listedAt = this.now();
+    }
+    private async readList(profileId: string, options?: import('@itookit/vfs-core').OperationOptions) {
+        const seen = new Set<string>(), sessions = new Map<string, HarnessSession>();
         let cursor: string | undefined;
         for (let count = 0; count < 8; count++) {
-            const page = await this.client.list(state.profile.id, {cursor}, options);
+            const page = await this.client.list(profileId, {cursor}, options);
             for (const session of page.sessions) {
-                if (!state.sessions.has(session.id) && state.sessions.size >= 512) {
-                    const oldest = state.sessions.keys().next().value!;
-                    state.sessions.delete(oldest); state.observations.delete(oldest);
-                    state.nativeDisconnected.delete(oldest);
-                }
-                const prior = state.sessions.get(session.id);
-                const next = {...session, lastTurnResult: session.lastTurnResult ?? prior?.lastTurnResult,
-                    activeTurnId: session.activeTurnId ?? (session.status === 'active' ? prior?.activeTurnId : null)};
-                state.sessions.set(session.id, next);
-                state.nativeDisconnected.delete(session.id);
-                state.observations.set(session.id, harnessObservation(next, [], {source: 'list', observedAt: this.now()}));
+                if (!sessions.has(session.id) && sessions.size >= 512) return {sessions, complete: false};
+                sessions.set(session.id, session);
             }
-            if (!page.nextCursor) break;
+            if (!page.nextCursor) return {sessions, complete: true};
             if (seen.has(page.nextCursor)) throw new Error('Harness list cursor did not advance');
             seen.add(page.nextCursor); cursor = page.nextCursor;
         }
-        state.listedAt = this.now();
+        return {sessions, complete: false};
     }
     private consume(state: ProfileState, page: HarnessEvents, repair: boolean) {
         if (repair && state.cursor) state.fileVersion = `${page.epoch}:${page.cursor}:snapshot`;
@@ -132,6 +143,7 @@ export class HarnessStatusObserver implements HarnessStatusPort {
             const fresh = changed.has(id) || requests.length > 0, observedAt = fresh ? this.now() : prior.observedAt;
             const observation = harnessObservation(session, requests, {observedAt,
                 source: fresh ? 'events' : prior.source, stale: this.now() - observedAt > 30_000,
+                ...(prior.refreshError?.code === 'LIST_TRUNCATED' && !fresh ? {stale: true, refreshError: prior.refreshError} : {}),
                 connection: state.nativeDisconnected.has(id) ? 'offline' : 'online'});
             const controlled = (state.profile.projectCapabilities?.sessionControl ?? this.writable) && observation.owned && !observation.stale && observation.connection === 'online';
             observation.canInterrupt = controlled && !!session.activeTurnId && state.profile.capabilities.interrupt;

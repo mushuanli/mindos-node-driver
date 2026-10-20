@@ -19,4 +19,6 @@ FileStorageBackend 是文件契约；共享文件来源与独立执行会话分�
 
 HarnessRecovery 持久化最近已接纳的 submittedTurnId，重开后与 pending / draftRevision 一起核对输入；模型执行是否完成与提交接纳分开，不因 UI 关闭丢失接纳事实。
 
+快照 forkSupport 区分持久能力与 canFork 的暂时可用性；当前原生 fork 协议只支持 latest，明确拒绝的节点声明 none，不按 harness 名推断历史位置支持。
+
 可选 submissionId 将宿主冻结提交关联到 turn/command 的稳定 requestId；HarnessRecovery 保存独立 submission 的 pending/accepted/rejected 回执，准备子操作仍使用独立请求。核对 create/resume 只确认准备，不接纳未发出的 turn；接纳后存储失败保持 unknown，不能把存储冲突当作原生未执行。

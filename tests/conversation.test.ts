@@ -7,6 +7,20 @@ import { toolSummary } from '../src/harness/tool-summary';
 const profile: HarnessProfile = {id:'codex', kind:'codex', projectRuntime:true, workspaces:[{id:'p'}], capabilities:{history:true,create:true,resume:true,interrupt:true,interactions:true}};
 const session = {id:'s', title:'Title', cwd:'/projects/p', status:'idle', updatedAt:1, resumable:true, owned:true};
 
+it('disables mutation controls on an expired observation and restores them after refresh', async () => {
+    vi.useFakeTimers();
+    const client = peer(); client.fork = vi.fn(async () => ({session: {...session, id: 'branch'}}));
+    const source = {...profile, capabilities: {...profile.capabilities, fork: true}};
+    const view = new HarnessConversation(client, source, 'p', 's');
+    try {
+        await view.read(); expect(view.snapshot()).toMatchObject({canSend: true, canFork: true});
+        await vi.advanceTimersByTimeAsync(30_001);
+        expect(view.snapshot()).toMatchObject({canSend: false, canFork: false, observation: {stale: true}});
+        await expect(view.fork()).rejects.toMatchObject({code: 'ECAPABILITY'}); expect(client.fork).not.toHaveBeenCalled();
+        await view.read(); expect(view.snapshot()).toMatchObject({canSend: true, canFork: true});
+    } finally {await view.close(); vi.useRealTimers();}
+});
+
 it('validates model-specific reasoning before admission and leaves unsupported nodes unchanged', async () => {
     const client = peer();
     client.models = vi.fn(async () => ({models: [{id: 'native', label: 'Native', reasoningEfforts: [{id: 'high', label: 'High'}]}]}));
@@ -238,7 +252,7 @@ it('creates a native branch and recovers an unknown fork without replaying it',a
     const journal={epoch:'e',load:async()=>record,save:async (value:HarnessRecovery)=>{record=structuredClone(value);}};
     const forkProfile={...profile,capabilities:{...profile.capabilities,fork:true}};
     const view=new HarnessConversation(client,forkProfile,'p','s',true,journal);await view.read();
-    expect(view.snapshot().canFork).toBe(true);await expect(view.fork('Alternative')).rejects.toMatchObject({outcome:'unknown'});
+    expect(view.snapshot()).toMatchObject({canFork: true, forkSupport: 'latest'});await expect(view.fork('Alternative')).rejects.toMatchObject({outcome:'unknown'});
     expect(view.snapshot()).toMatchObject({pending:true,canFork:false});
     const reopened=new HarnessConversation(client,forkProfile,'p','s',true,journal);await reopened.read();
     const branch={...session,id:'branch',parentSessionId:'s'};

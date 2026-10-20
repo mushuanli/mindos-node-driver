@@ -13,6 +13,49 @@ function fixture() {
     let now = 100_000;
     return {client, observer: new HarnessStatusObserver(client, () => now), advance: () => { now += 15_001; }};
 }
+it('replaces a complete authoritative list and removes sessions missing after an event gap', async () => {
+    const {client, observer, advance} = fixture();
+    await observer.poll();
+    vi.mocked(client.list).mockResolvedValue({sessions: [], nextCursor: null});
+    vi.mocked(client.events).mockResolvedValue({...page, gap: true}); advance();
+    expect(await observer.poll()).toEqual([]);
+    await observer.close();
+});
+it('retains the last complete snapshot when a later list page fails without installing partial changes', async () => {
+    const {client, observer, advance} = fixture(); await observer.poll(); advance();
+    vi.mocked(client.list).mockResolvedValueOnce({sessions: [{...session, title: 'Partial title'}], nextCursor: 'next'})
+        .mockRejectedValueOnce(new Error('Second page failed'));
+    const rows = await observer.poll();
+    expect(rows).toEqual([expect.objectContaining({title: 'Title', observation: expect.objectContaining({stale: true, canRespond: false})})]);
+    await observer.close();
+});
+it('marks truncated listings and preserves unseen sessions without claiming they were deleted', async () => {
+    const {client, observer, advance} = fixture(); await observer.poll(); advance();
+    vi.mocked(client.list).mockImplementation(async (_profile, query) => ({sessions: [{...session, id: 'other'}], nextCursor: `${query?.cursor ?? ''}next`}));
+    const rows = await observer.poll();
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.sessionId === 's')).toMatchObject({truncated: true,
+        observation: {stale: true, refreshError: {code: 'LIST_TRUNCATED'}, canInterrupt: false, canRespond: false}});
+    expect(rows.find(row => row.sessionId === 'other')).toMatchObject({truncated: true, observation: {stale: false}});
+    await observer.close();
+});
+it('bounds a truncated session projection and recovers to a later complete empty snapshot', async () => {
+    const {client, observer, advance} = fixture();
+    vi.mocked(client.list).mockResolvedValue({sessions: Array.from({length: 513}, (_, i) => ({...session, id: String(i)})), nextCursor: null});
+    const rows = await observer.poll(); expect(rows).toHaveLength(512); expect(rows.every(row => row.truncated)).toBe(true);
+    advance(); vi.mocked(client.list).mockResolvedValue({sessions: [], nextCursor: null});
+    expect(await observer.poll()).toEqual([]); await observer.close();
+});
+it('retains known sessions as stale when a truncated enumeration fills the entire observation budget', async () => {
+    const {client, observer, advance} = fixture(); await observer.poll(); advance();
+    vi.mocked(client.list).mockResolvedValue({sessions: Array.from({length: 513}, (_, index) => ({...session, id: `new-${index}`})), nextCursor: null});
+    const rows = await observer.poll();
+    expect(rows).toHaveLength(512);
+    expect(rows.find(row => row.sessionId === 's')).toMatchObject({truncated: true,
+        observation: {stale: true, refreshError: {code: 'LIST_TRUNCATED'}, canInterrupt: false, canRespond: false}});
+    advance(); vi.mocked(client.list).mockResolvedValue({sessions: [], nextCursor: null});
+    expect(await observer.poll()).toEqual([]); await observer.close();
+});
 it('preserves unknown and notLoaded without inferring completion or failure', () => {
     for (const status of [null, 'notLoaded', 'futureStatus', 'systemError'])
         expect(harnessObservation({...session, status})).toMatchObject({execution: 'unknown', lastResult: undefined});
