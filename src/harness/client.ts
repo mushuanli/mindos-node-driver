@@ -2,10 +2,11 @@ import { requestId as createRequestId } from '../files/request-id';
 import { FSError, type OperationOptions } from '@itookit/vfs-core';
 import type { HarnessClient, HarnessMutationOptions, HarnessEvents, HarnessHistory, HarnessPage, HarnessReceipt, HarnessSession, HarnessHistoryOptions, HarnessEventsOptions } from './contracts';
 import { HarnessRpc } from './rpc';
+import { HarnessEventFeed } from './event-feed';
 import { validateUsage } from './usage';
 import {validateModels, validateModelSelection} from './models';
 import {validateCommands, validateCommandResult} from './commands';
-import { validateDeletedSessionIds, validateEvents, validateHistory, validatePage, validateProfiles, validateReceipt, validateSession } from './validation';
+import { validateDeletedSessionIds, validateHistory, validatePage, validateProfiles, validateReceipt, validateSession } from './validation';
 
 /** Native task ownership lives on the gateway; this client never replays a mutation. */
 export class MCPHarnessClient implements HarnessClient {
@@ -19,21 +20,42 @@ export class MCPHarnessClient implements HarnessClient {
         return await this.mutate('harness_command', {profileId, sessionId, command, arguments: args, ...(options?.selection ? {selection: validateModelSelection(options.selection)} : {})}, options, validateCommandResult) as import('./contracts').HarnessCommandResult;
     }
     private epoch?: string;
-    private watchId?: string;
-    private filesEnabled?: boolean;
+    private readonly feeds = new Map<string, HarnessEventFeed>();
+    private closed = false;
+    private feed(profileId: string): HarnessEventFeed {
+        if (this.closed) throw new FSError('ECANCELLED','Harness client is closed');
+        let feed = this.feeds.get(profileId);
+        if (!feed) { feed = new HarnessEventFeed(this.rpc,{...this.scope,profileId}); this.feeds.set(profileId,feed); }
+        return feed;
+    }
+    subscribe(profileId: string, listener: () => void): () => void { return this.feed(profileId).subscribe(listener); }
+    eventSnapshot(profileId: string, cursor?: {after:number;eventEpoch:string}, options?: HarnessEventsOptions): Promise<HarnessEvents> {
+        return this.feed(profileId).snapshot(cursor,options);
+    }
+    private directoryValue?: string;
+    private directoryError?: unknown;
+    private directoryStop?: () => void;
+    private readonly directoryListeners = new Set<() => void>();
     constructor(private readonly rpc: HarnessRpc, private readonly scope: {projectId: string; revision: number; readOnly?: boolean; capabilities?: import('../authorization').RemoteProjectCapabilities} | undefined = undefined) {}
-    async directoryVersion(options?: OperationOptions): Promise<string | undefined> {
-        if (!this.scope) return;
-        if (this.filesEnabled === undefined) {
-            const meta = await this.rpc.metadata?.(options);
-            const capability = (meta?.['itookit/mindos-node'] ?? meta?.['itookit/pi-agent'] ?? meta?.['itookit/fs-agent']) as {fileWatch?: boolean} | undefined;
-            this.filesEnabled = capability?.fileWatch === true;
+    subscribeDirectory(listener: () => void): () => void {
+        this.directoryListeners.add(listener);
+        if (this.scope && !this.directoryStop) this.directoryStop = this.rpc.subscribe('projects',{...this.scope},{next: value => {
+            const row = value as {version?:unknown;gap?:unknown;truncated?:unknown};
+            if (typeof row?.version !== 'string' || row.version.length > 128 || typeof row.gap !== 'boolean' || typeof row.truncated !== 'boolean')
+                throw new FSError('EIO','Invalid directory subscription frame','protocol');
+            this.directoryValue = row.version; this.directoryError = undefined;
+            this.notifyDirectory();
+        },error: error => { this.directoryError = error; this.notifyDirectory(); }});
+        return () => { this.directoryListeners.delete(listener); if (!this.directoryListeners.size) { this.directoryStop?.(); this.directoryStop = undefined; } };
+    }
+    directorySnapshot(): string | undefined { if (this.directoryError) throw this.directoryError; return this.directoryValue; }
+    private notifyDirectory(): void {
+        for (const listener of [...this.directoryListeners]) {
+            const started = Date.now();
+            try { listener(); }
+            catch { console.warn('[Harness] Directory observer failed', { operation: 'harness.directory.observe', operationId: createRequestId(),
+                stage: 'notify', outcome: 'failure', code: 'EVENT_OBSERVER_FAILED', durationMs: Date.now() - started }); }
         }
-        if (!this.filesEnabled) return;
-        const result = await this.rpc.call('project_watch', {...this.scope, ...(this.watchId ? {watchId: this.watchId} : {})}, options) as {watchId?: unknown; version?: unknown; gap?: unknown; truncated?: unknown};
-        if (typeof result?.watchId !== 'string' || !/^[a-f0-9]{32}$/.test(result.watchId) || typeof result.version !== 'string' || result.version.length > 128 || !result.version.startsWith(result.watchId + ':') || typeof result.gap !== 'boolean' || typeof result.truncated !== 'boolean') throw new FSError('EIO', 'Invalid directory watch response');
-        this.watchId = result.watchId;
-        return result.version;
     }
     async search(profileId: string, query: {query: string; mode: 'title' | 'content' | 'prompt'; archived?: boolean}, options?: OperationOptions) {
         const keywords = /[^\S\r\n]/u.test(query.query);
@@ -111,9 +133,6 @@ export class MCPHarnessClient implements HarnessClient {
     async respond(profileId: string, nativeRequestId: string | number, response: Record<string, unknown>, options?: OperationOptions) {
         await this.mutate('harness_respond', { profileId, nativeRequestId, response }, options);
     }
-    async events(profileId: string, cursor = {}, options?: HarnessEventsOptions): Promise<HarnessEvents> {
-        return validateEvents(await this.rpc.call('harness_events', { ...this.scope, profileId, ...cursor, ...(options?.toolDetail ? {toolDetail: options.toolDetail} : {}) }, options));
-    }
     async operation(profileId: string, requestId: string, options?: OperationOptions): Promise<HarnessReceipt> {
         if (!this.epoch) await this.profiles(options);
         const receipt = validateReceipt(await this.rpc.call('harness_operation', { ...this.scope, profileId, requestId, epoch: (options as HarnessMutationOptions)?.epoch ?? this.epoch }, options));
@@ -137,8 +156,9 @@ export class MCPHarnessClient implements HarnessClient {
         }
     }
     async close() {
-        try { if (this.watchId && this.scope) await this.rpc.call('project_unwatch', {...this.scope, watchId: this.watchId}, {timeoutMs: 2000}); }
-        catch { /* The server expires disconnected observers. */ }
-        finally { this.watchId = undefined; await this.rpc.close(); }
+        this.closed = true;
+        for (const feed of this.feeds.values()) feed.close(); this.feeds.clear();
+        this.directoryStop?.(); this.directoryStop = undefined; this.directoryListeners.clear();
+        await this.rpc.close();
     }
 }

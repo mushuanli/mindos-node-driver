@@ -97,7 +97,7 @@ itookit 内自动发现 `tools/mindos-node`。文件进程隔离测试还需 `MI
 
 多关键字查询以空格/制表符分隔，按不区分大小写、顺序不限的字面 AND 匹配；文件内容以命中行为单位，原生会话内容以消息为单位。文件 discovery metadata 与原生 profile 分别用 `searchKeywords: true` 声明该语义；driver 在含分词空白的查询发送前核对能力，避免旧节点静默按整段短语搜索。显式换行保留原有字面多行语义。
 
-`adapter.observeHarness(projects.harness(project, {readOnly: true}), false)` 创建共享 `HarnessStatusObserver`，poll 返回 profile/session 的 `HarnessObservation`；仅使用有界列表和事件，不读取每行历史、不 resume。execution、最近结果、连接、时效和控制能力分别返回。`close()` 释放底层客户端，关闭界面不停止原生 turn。
+`adapter.observeHarness(projects.harness(project, {readOnly: true}), false)` 创建共享 `HarnessStatusObserver`，subscribe 接收更新通知，refresh 返回 profile/session 的 `HarnessObservation`；仅使用有界列表和事件，不读取每行历史、不 resume。execution、最近结果、连接、时效和控制能力分别返回。`close()` 释放底层客户端，关闭界面不停止原生 turn。
 
 第三个参数 `{watchFiles: false}` 可关闭文件目录观察，让会话状态读取与文件刷新独立。目录版本只返回服务端真实版本；覆盖不足不再拼接随时间变化的版本号。是否继续轮询由应用层按活动轮次和展示订阅决定，本驱动不启动定时器。
 
@@ -113,7 +113,7 @@ Codex profile 声明 rename/archive/unarchive 与 attachments 能力。`harness.
 `turn` options 可传 `attachments`（kind/name/content/mimeType）：文本为 UTF-8 内容，图片为 PNG/JPEG/WebP data URL。最多 5 个，文本每个 64 KiB、图片解码每个 256 KiB、编码内容合计 512 KiB；不传宿主路径或 HTTP URL。会话 journal 保存未发送附件草稿，确认 turn 回执后清空，未知结果保留但禁止重发。`HarnessStatusRow.fileVersion` 只在文件变更完成、turn 完成及重连快照修复时推进，供宿主合并目录刷新。
 
 
-`HarnessClient.directoryVersion()` 是可选的项目目录观察端口，通过发现元数据 `fileWatch` 协商 `project_watch`。观察器复用 watchId、在 close 时释放，旧服务不发送新工具请求。服务器提供有界 inotify 覆盖，truncated 时每 30 秒补充目录刷新；版本不含路径或文件正文。`HarnessStatusObserver.fileVersion()` 与会话列表分离，没有会话也能观察文件。宿主按项目授权共享订阅，授权变动使旧版本失效。单个 Claude 子进程断线只影响对应 thread，不能使同 profile 的其他会话断线。
+`HarnessClient.subscribeDirectory()` 通过共享 SSE 接收目录失效，`directorySnapshot()` 只读取本地最近版本；`subscribe(profile, listener)` 和 `eventSnapshot(profile, cursor)` 同样分离通知与本地回放。真实网络订阅按节点、凭据引用和授权版本共享；增加或移除主题会携带当前游标重新建立流，不重放任何修改。传输断线退避重连，错误按主题隔离；旧节点明确提示升级，0.4 不保留事件或目录轮询 RPC。文件覆盖不足以 truncated 明确表达，不用时间制造版本。`HarnessStatusObserver.fileVersion()` 与会话列表分离，零会话项目也能观察文件。单个 Claude 子进程断线只影响对应 thread。
 
 原生 Codex 管理包含 rename/archive/unarchive/delete。永久删除沿用 epoch/requestId/receipt，客户端持久化删除标记；恢复时先核对删除回执，避免重放或读取已删除历史。notLoaded 的执行状态保持 unknown，归档原生历史不代表停止独立 CLI。
 
@@ -158,3 +158,7 @@ Profiles opt in with `capabilities.models`. `HarnessClient.models(profileId, ses
 包名改为 `@itookit/mindos-node-driver`，首选工厂为 `createMindOSNodeDriver()`，类型为 `MindOSNodeDriver` / `MindOSNodeDescriptor`。包根保留 `createMindOSNodeClient` / `MindOSNodeClient` 和更早的 PiAgent 别名供迁移。源码仓库统一为 `mushuanli/mindos-node-driver`。旧包的已发布版本保持可用。新客户端兼容新旧发现描述与能力工具，HTTP 授权头、协议编码和持久身份不迁移。
 
 包名由 `@itookit/mindos-node-client` 更名为 `@itookit/mindos-node-driver`；更新依赖与 import 路径，首选 `createMindOSNodeDriver()`。旧 npm 包的已发布版本不变，持久连接、授权和原生会话身份不迁移。
+
+### 共享事件传输
+
+节点 0.4 与 driver 0.4 配套使用。`POST /v1/events` 使用正常认证 header，订阅和游标位于请求体；凭据不进入 URL。每条连接最多 32 个订阅，UTF-8 SSE 帧有容量限制和 45 秒无活动检测。会话视图接收通知后合并刷新，不再执行 200ms 轮询；远程进程通过终态订阅等待，状态 GET 仅保留恢复查询。关闭观察不取消原生 turn；进程所有者 release 仍明确取消并等待监管完成。

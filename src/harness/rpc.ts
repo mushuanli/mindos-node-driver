@@ -1,19 +1,25 @@
 import { Client, StreamableHTTPClientTransport, isCallToolResult } from '@modelcontextprotocol/client';
 import { FSError, checkOperation, operationScope, type OperationOptions } from '@itookit/vfs-core';
+import { NodeEventHub, requireEventCapability, type RemoteEventListener } from '../events';
 
 export interface HarnessRpc {
     call(name: string, args: object, options?: OperationOptions): Promise<unknown>;
     metadata?(options?: OperationOptions): Promise<Record<string, unknown> | undefined>;
+    subscribe(plugin: string, args: Record<string, unknown>, listener: RemoteEventListener): () => void;
     close(): Promise<void>;
 }
 
-export function createHarnessRpc(endpoint: string, fetch: typeof globalThis.fetch, exactEndpoint = false): HarnessRpc {
-    const client = new Client({ name: 'itookit-mindos-node-driver', version: '0.3.1' }, {
+export function createHarnessRpc(endpoint: string, fetch: typeof globalThis.fetch, exactEndpoint = false, sharedEvents?: NodeEventHub): HarnessRpc {
+    const base = new URL(endpoint.endsWith('/') ? endpoint : endpoint + '/');
+    if (base.pathname.endsWith('/mcp/')) base.pathname = base.pathname.slice(0,-4);
+    const events = sharedEvents ?? new NodeEventHub(new URL('v1/events',base),fetch);
+    const client = new Client({ name: 'itookit-mindos-node-driver', version: '0.4.0' }, {
         supportedProtocolVersions: ['2026-07-28'], versionNegotiation: { mode: { pin: '2026-07-28' } },
         inputRequired: { autoFulfill: false },
     });
     const lifetime = new AbortController();
     let connecting: Promise<void> | undefined;
+    const subscriptions = new Set<() => void>();
     const connect = () => connecting ??= client.connect(new StreamableHTTPClientTransport(exactEndpoint ? new URL(endpoint)
         : new URL('mcp',endpoint.endsWith('/') ? endpoint : endpoint + '/'),{fetch}),{timeout:30_000})
         .catch(async error => {connecting = undefined;await client.close();throw error;});
@@ -27,7 +33,19 @@ export function createHarnessRpc(endpoint: string, fetch: typeof globalThis.fetc
     return {
         call:(name,args,options) => invoke(options,scope => callHarnessTool(client,name,args,scope)),
         metadata:options => invoke(options,async () => client.getDiscoverResult()?._meta),
-        async close() { lifetime.abort(); await client.close(); },
+        subscribe(plugin,args,listener) {
+            let stopped = false, stop: (() => void) | undefined;
+            void connect().then(() => {
+                if (stopped || lifetime.signal.aborted) return;
+                const meta = client.getDiscoverResult()?._meta;
+                const descriptor = meta?.['itookit/mindos-node'] as {events?: unknown} | undefined;
+                requireEventCapability(descriptor?.events);
+                stop = events.subscribe(plugin,args,listener);
+            }).catch(error => { if (!stopped) listener.error(error); });
+            const release = () => { stopped = true; stop?.(); subscriptions.delete(release); };
+            subscriptions.add(release); return release;
+        },
+        async close() { lifetime.abort(); for (const stop of subscriptions) stop(); if (!sharedEvents) events.close(); await client.close(); },
     };
 }
 async function callHarnessTool(client: Client, name: string, args: object, scope: ReturnType<typeof operationScope>): Promise<unknown> {

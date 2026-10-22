@@ -11,9 +11,10 @@ import type { HarnessClient, HarnessProfile } from './harness/contracts';
 import type { HarnessConversationJournal } from './harness/conversation-journal';
 import { HarnessConversation, type HarnessConversationPort } from './harness/conversation';
 import { HarnessStatusObserver, type HarnessStatusPort } from './harness/status-observer';
+import { NodeEventHub } from './events';
 
 type Connection = Omit<RemoteConnection, 'alias'>;
-export interface MindOSNodeDescriptor { authorization?: RemoteAuthorization; version: 1; httpEndpoint: string; serverId: string | null; fileProtocol: 'fs-agent-http-v1'; harness: boolean; projects?: boolean; sync?: boolean; projectProtocol?: string; directorySync?: boolean; directorySyncVersion?: number; fileSearch?: boolean; fileWatch?: boolean; }
+export interface MindOSNodeDescriptor { authorization?: RemoteAuthorization; version: 1; httpEndpoint: string; serverId: string | null; fileProtocol: 'fs-agent-http-v1'; harness: boolean; projects?: boolean; sync?: boolean; projectProtocol?: string; directorySync?: boolean; directorySyncVersion?: number; fileSearch?: boolean; directoryEvents?: boolean; events?: {version:1;transport:'sse';endpoint:'/v1/events'}; }
 export interface MindOSNodeDriver extends HttpSourceProvider {
     observeHarness(client: HarnessClient, writable?: boolean, options?: {watchFiles?: boolean}): HarnessStatusPort;
     open(connection: RemoteConnection & {serverProjectId?: string; serverProjectRevision?: number; access?: 'ro' | 'rw'}, options?: import('@itookit/vfs-core').OperationOptions): ReturnType<HttpSourceProvider['open']>;
@@ -29,11 +30,20 @@ export interface MindOSNodeDriver extends HttpSourceProvider {
 /** A single credential owner; file, sync and harness clients retain independent lifetimes. */
 export function createMindOSNodeDriver(resolveCredential?: (reference: string) => string | Promise<string>, fetch = globalThis.fetch): MindOSNodeDriver {
     const secrets = new Map<string, string>();
+    const eventHubs = new Map<string, NodeEventHub>();
+    const eventHub = (connection: Connection): NodeEventHub => {
+        const endpoint = new URL(connection.endpoint.endsWith('/') ? connection.endpoint : connection.endpoint+'/');
+        if (endpoint.pathname.endsWith('/mcp/')) endpoint.pathname = endpoint.pathname.slice(0,-4);
+        const key = JSON.stringify([endpoint.href, connection.credentialRef, connection.username, connection.anonymous, connection.authorization]);
+        let hub = eventHubs.get(key);
+        if (!hub) { hub = new NodeEventHub(new URL('v1/events',endpoint),authenticatedFetch(connection,credential,fetch)); eventHubs.set(key,hub); }
+        return hub;
+    };
     const credential = async (ref: string) => {
         const value = secrets.get(ref) ?? await resolveCredential?.(ref);
         if (!value) throw new FSError('EACCES', 'Remote credentials required'); return value;
     };
-    const files = createHttpSourceProvider(credential, fetch);
+    const files = createHttpSourceProvider(credential, fetch, eventHub);
     const openFiles = files.open.bind(files);
     const disposeFiles = files.dispose.bind(files);
     const clients = new Set<{close(): Promise<void>}>();
@@ -59,12 +69,13 @@ export function createMindOSNodeDriver(resolveCredential?: (reference: string) =
         },
         setCredential(ref: string, value: string) {
             const previous = secrets.get(ref); secrets.set(ref, value);
-            return () => { if (previous === undefined) secrets.delete(ref); else secrets.set(ref, previous); };
+            for (const hub of eventHubs.values()) hub.reconnect();
+            return () => { if (previous === undefined) secrets.delete(ref); else secrets.set(ref, previous); for (const hub of eventHubs.values()) hub.reconnect(); };
         },
-        clearCredential(ref: string) { secrets.delete(ref); },
+        clearCredential(ref: string) { secrets.delete(ref); for (const hub of eventHubs.values()) hub.reconnect(); },
         harness(connection: Connection) {
             const snapshot = { ...connection };
-            const client = new MCPHarnessClient(createHarnessRpc(snapshot.endpoint, authenticatedFetch(snapshot, credential, fetch)));
+            const client = new MCPHarnessClient(createHarnessRpc(snapshot.endpoint, authenticatedFetch(snapshot, credential, fetch), false, eventHub(snapshot)));
             const close = client.close.bind(client);
             client.close = async () => { clients.delete(client); await close(); };
             clients.add(client); return client;
@@ -88,9 +99,9 @@ export function createMindOSNodeDriver(resolveCredential?: (reference: string) =
             catch(error) {await backend.close();throw error;}
         },
         async projectProcess(connection: Connection, project: RemoteProject, spec: Parameters<HttpSourceProvider['process']>[1]) {
-            const projects = new MCPProjectClient(createHarnessRpc(connection.endpoint,authenticatedFetch(connection,credential,fetch)));
+            const projects = new MCPProjectClient(createHarnessRpc(connection.endpoint,authenticatedFetch(connection,credential,fetch),false,eventHub(connection)));
             try {
-                const owner=createProjectProcess({...connection,credential:() => credential(connection.credentialRef),fetch},projects,project,spec);
+                const owner=createProjectProcess({...connection,credential:() => credential(connection.credentialRef),fetch,events:eventHub(connection)},projects,project,spec);
                 const release=owner.release.bind(owner);
                 owner.release=async () => {await release(); processes.delete(owner);};
                 processes.add(owner); return owner;
@@ -98,7 +109,7 @@ export function createMindOSNodeDriver(resolveCredential?: (reference: string) =
             catch(error) {await projects.close(); throw error;}
         },
         projects(connection: Connection) {
-            const client = new MCPProjectClient(createHarnessRpc(connection.endpoint,authenticatedFetch(connection,credential,fetch)));
+            const client = new MCPProjectClient(createHarnessRpc(connection.endpoint,authenticatedFetch(connection,credential,fetch),false,eventHub(connection)));
             const close = client.close.bind(client);
             client.close = async () => { clients.delete(client); await close(); };
             clients.add(client); return client;
@@ -111,6 +122,7 @@ export function createMindOSNodeDriver(resolveCredential?: (reference: string) =
             results.push(...await Promise.allSettled([disposeFiles()]));
             const errors = results.flatMap(r => r.status === 'rejected' ? [r.reason] : []);
             if (errors.length) throw new AggregateError(errors, 'mindos-node resources failed to close');
+            for (const hub of eventHubs.values()) hub.close(); eventHubs.clear();
             secrets.clear();
         },
     });
@@ -147,6 +159,7 @@ function authenticatedFetch(connection: Connection, credential: (ref: string) =>
 }
 
 function boundedResponse(response: Response): Response {
+    if (response.headers.get('content-type')?.startsWith('text/event-stream')) return response;
     if (!response.body) return response;
     let bytes = 0;
     const stream = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({

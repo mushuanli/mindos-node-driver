@@ -9,8 +9,10 @@ import { retryDelay } from './transport/retry';
 export { HttpResponseError } from './transport/errors';
 
 import { checkOperation, FSError, FSOperationCancelledError, operationScope, type OperationOptions } from '@itookit/vfs-core';
+import { NodeEventHub, type RemoteEventListener } from '../events';
 
 export interface HttpConnectionOptions {
+    events?: NodeEventHub;
     endpoint: string;
     credential: () => string | Promise<string>;
     anonymous?: boolean;
@@ -22,6 +24,8 @@ export interface HttpConnectionOptions {
 }
 
 export class HttpTransport {
+    private readonly events: NodeEventHub;
+    private readonly eventStops = new Set<() => void>();
     private readonly endpoint: URL;
     private readonly lifetime = new AbortController();
     constructor(private readonly config: HttpConnectionOptions) {
@@ -29,9 +33,17 @@ export class HttpTransport {
         this.endpoint = new URL(config.endpoint.endsWith('/') ? config.endpoint : config.endpoint + '/');
         if (!['http:', 'https:'].includes(this.endpoint.protocol) || this.endpoint.username || this.endpoint.password
             || this.endpoint.search || this.endpoint.hash) throw new FSError('EINVAL', 'Invalid file server endpoint');
+        this.events = config.events ?? new NodeEventHub(new URL('v1/events', this.endpoint), async (input,init) =>
+            (config.fetch ?? globalThis.fetch)(input,{...init, headers:await this.headers(init?.headers)}));
     }
     get defaultTimeoutMs(): number { return this.config.timeoutMs ?? 30_000; }
-    close() { this.lifetime.abort(new FSOperationCancelledError()); }
+    close() { this.lifetime.abort(new FSOperationCancelledError()); for (const stop of this.eventStops) stop(); this.eventStops.clear(); if (!this.config.events) this.events.close(); }
+    subscribe(plugin: string, args: Record<string, unknown>, listener: RemoteEventListener): () => void {
+        if (this.lifetime.signal.aborted) throw new FSOperationCancelledError();
+        const stop = this.events.subscribe(plugin,args,listener);
+        const release = () => { stop(); this.eventStops.delete(release); };
+        this.eventStops.add(release); return release;
+    }
     async json<T>(route: string, init: RequestInit = {}, options?: OperationOptions, maxBytes = 4 * 1024 * 1024): Promise<T> {
         return this.request(route, init, options, async response => {
             const data = await boundedBody(response, maxBytes);

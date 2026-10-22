@@ -6,6 +6,7 @@ import { HttpProcessSession, type RemoteProcessSpec } from './process';
 import { SourcePool } from './provider/source-pool';
 import { readExports } from './protocol/exports';
 import { HttpTransport } from './transport';
+import type { NodeEventHub } from '../events';
 
 export interface RemoteConnection { endpoint: string; alias: string; credentialRef: string; username?: string; anonymous?: boolean; authorization?: import('../authorization').RemoteAuthorization; }
 type ServerConnection = Omit<RemoteConnection, 'alias'>;
@@ -24,15 +25,16 @@ export interface HttpSourceProvider {
     dispose(): Promise<void>;
 }
 
-export function createHttpSourceProvider(resolveCredential?: CredentialResolver, fetch?: typeof globalThis.fetch): HttpSourceProvider {
-    return new SourceProvider(resolveCredential, fetch);
+export function createHttpSourceProvider(resolveCredential?: CredentialResolver, fetch?: typeof globalThis.fetch, events?: (connection: ServerConnection) => NodeEventHub): HttpSourceProvider {
+    return new SourceProvider(resolveCredential, fetch, events);
 }
 
 /** Host-facing composition; pooling and wire protocol have independent owners. */
 class SourceProvider implements HttpSourceProvider {
     private readonly credentials = new Map<string, string>();
     private readonly sources = new SourcePool();
-    constructor(private readonly resolveCredential?: CredentialResolver, private readonly fetch?: typeof globalThis.fetch) {}
+    constructor(private readonly resolveCredential?: CredentialResolver, private readonly fetch?: typeof globalThis.fetch,
+        private readonly events?: (connection: ServerConnection) => NodeEventHub) {}
 
     private credential(reference: string) {
         return async () => {
@@ -94,7 +96,7 @@ class SourceProvider implements HttpSourceProvider {
     }
 
     transport(connection: ServerConnection, password?: string) {
-        return new HttpTransport({ ...connection, credential: password ? () => password : this.credential(connection.credentialRef), fetch: this.fetch });
+        return new HttpTransport({ ...connection, credential: password ? () => password : this.credential(connection.credentialRef), fetch: this.fetch, events: this.events?.(connection) });
     }
 
     async dispose() { this.credentials.clear(); await this.sources.dispose(); }

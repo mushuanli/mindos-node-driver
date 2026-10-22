@@ -3,6 +3,24 @@ import { HttpTransport } from '../../src/files/transport';
 import { HttpProcessSession } from '../../src/files/process';
 const spec = { serverId: 'node', epoch: 'epoch', cwd: '/workspace', mounts: [{ alias: 'code', path: '', at: '/workspace', access: 'rw' as const }] };
 const status = (state = 'exited') => ({ state, stdout: 'output', stderr: '', code: 0, error: null, truncated: false });
+it('waits for a pushed terminal state without querying the process status endpoint', async () => {
+    let complete!: () => void;
+    const paths: string[] = [];
+    const fetch = vi.fn(async (url,init) => {
+        const path = new URL(String(url)).pathname; paths.push(path);
+        if (path === '/v1/processes') return Response.json(status('running'));
+        expect(path).toBe('/v1/events'); const subscription = JSON.parse(String(init?.body)).subscriptions[0];
+        const body = new ReadableStream<Uint8Array>({start(controller) {
+            complete = () => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({id:subscription.id,data:status()})}\n\n`));
+        }});
+        return new Response(body,{headers:{'content-type':'text/event-stream'}});
+    });
+    const owner = new HttpProcessSession(new HttpTransport({endpoint:'http://localhost',credential:() => 'secret',fetch}),spec);
+    const running = owner.nativeShell.exec('bash',['-c','sleep 1']);
+    await vi.waitFor(() => expect(paths).toContain('/v1/events'));
+    expect(paths).toEqual(['/v1/processes','/v1/events']); complete();
+    expect(await running).toMatchObject({stdout:'output',code:0}); await owner.release();
+});
 it('uses canonical cwd and the frozen mounts without replaying process creation', async () => {
     const fetch = vi.fn(async (_url, init) => {
         expect(init.redirect).toBe('error');

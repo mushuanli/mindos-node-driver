@@ -24,6 +24,7 @@ export interface HarnessSession {
 }
 export interface HarnessEvent { seq: number; timestamp?: number; message: { method: string; id?: string | number; params?: Record<string, unknown> } }
 export interface HarnessEvents {
+    after?: number;
     epoch: string; cursor: number; gap: boolean; events: HarnessEvent[]; requests: Array<HarnessEvent['message']>;
 }
 export interface HarnessPage { sessions: HarnessSession[]; nextCursor: string | null }
@@ -49,7 +50,8 @@ export interface HarnessClient {
     commands?(profileId: string, sessionId?: string, options?: OperationOptions): Promise<HarnessSlashCommand[]>;
     command?(profileId: string, sessionId: string, command: string, args: string, options?: HarnessCommandOptions): Promise<HarnessCommandResult>;
     usage?(profileId: string, sessionId: string, options?: OperationOptions): Promise<HarnessUsage>;
-    directoryVersion?(options?: import('@itookit/vfs-core').OperationOptions): Promise<string | undefined>;
+    directorySnapshot?(): string | undefined | Promise<string | undefined>;
+    subscribeDirectory?(listener: () => void): () => void;
     delete?(profileId: string, sessionId: string, options?: HarnessMutationOptions): Promise<{deletedSessionIds: string[]}>;
     rename?(profileId: string, sessionId: string, name: string, options?: HarnessMutationOptions): Promise<{session: HarnessSession}>;
     archive?(profileId: string, sessionId: string, archived: boolean, options?: HarnessMutationOptions): Promise<{session: HarnessSession}>;
@@ -64,7 +66,8 @@ export interface HarnessClient {
     turn(profileId: string, sessionId: string, prompt: string, options?: HarnessTurnOptions): Promise<{ turnId: string }>;
     interrupt(profileId: string, sessionId: string, turnId: string, options?: HarnessMutationOptions): Promise<void>;
     respond(profileId: string, nativeRequestId: string | number, response: Record<string, unknown>, options?: HarnessMutationOptions): Promise<void>;
-    events(profileId: string, cursor?: { after: number; eventEpoch: string }, options?: HarnessEventsOptions): Promise<HarnessEvents>;
+    subscribe(profileId: string, listener: () => void): () => void;
+    eventSnapshot(profileId: string, cursor?: { after: number; eventEpoch: string }, options?: HarnessEventsOptions): Promise<HarnessEvents>;
     operation(profileId: string, requestId: string, options?: HarnessMutationOptions): Promise<HarnessReceipt>;
     close(): Promise<void>;
 }

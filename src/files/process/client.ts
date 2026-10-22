@@ -15,6 +15,11 @@ export class ProcessClient {
 
     status(id: string, options?: OperationOptions) { return this.request(this.route(id), {}, options); }
     cancel(id: string) { return this.request(`${this.route(id)}/cancel`, { method: 'POST' }, { timeoutMs: 5000 }); }
+    subscribe(id: string, next: (status: ProcessStatus) => void, error: (error: unknown) => void): () => void {
+        return this.http.subscribe('process',{epoch:this.spec.epoch,processId:id},{
+            next: value => { validateStatus(value as ProcessStatus); next(value as ProcessStatus); }, error,
+        });
+    }
     close() { this.http.close(); }
 
     private route(id: string) { return `v1/processes/${encodeURIComponent(this.spec.epoch)}/${encodeURIComponent(id)}`; }

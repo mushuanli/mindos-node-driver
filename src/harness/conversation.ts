@@ -89,6 +89,7 @@ export class HarnessConversation implements HarnessConversationPort {
         if (sessionId) this.session = {id: sessionId, title: sessionId, cwd: null, status: null, updatedAt: null, resumable: false};
     }
     get kind() { return this.profile.kind; }
+    subscribe(listener: () => void): () => void { return this.client.subscribe(this.profile.id,listener); }
     private options(): OperationOptions { return {signal: this.lifetime.signal, timeoutMs: 30_000}; }
     snapshot(): HarnessConversationSnapshot {
         const observation = harnessObservation(this.session, this.requests, {observedAt: this.observedAt, source: this.source,
@@ -262,7 +263,7 @@ export class HarnessConversation implements HarnessConversationPort {
         this.refreshError = undefined; this.errors.clear('history');
         if (this.session) {
             try {
-                const page = await this.client.events(this.profile.id, this.cursor, {...this.options(), toolDetail: 'summary'});
+                const page = await this.client.eventSnapshot(this.profile.id, this.cursor, {...this.options(), toolDetail: 'summary'});
                 this.requests = page.requests.filter(r => r.params?.threadId === this.session!.id).flatMap(nativeRequest);
                 await this.reconcileResponses();
             } catch (error) {this.refreshError = this.errors.record('events', error);}
@@ -290,11 +291,11 @@ export class HarnessConversation implements HarnessConversationPort {
             this.navigationSessionId = result.session.id;
         });
     }
-    async poll() {
+    async refresh() {
         if (this.deletedSessionIds.length) return this.snapshot();
         let stage = 'events';
         try {
-            const page = await this.client.events(this.profile.id, this.cursor, {...this.options(), toolDetail: 'summary'});
+            const page = await this.client.eventSnapshot(this.profile.id, this.cursor, {...this.options(), toolDetail: 'summary'});
             this.disconnected = false;
             const repair = page.gap || !!this.cursor && this.cursor.eventEpoch !== page.epoch;
             if (repair && this.busy) {
@@ -505,6 +506,7 @@ export class HarnessConversation implements HarnessConversationPort {
 
 /** Structural port for hosts; alternate transports do not inherit the implementation. */
 export interface HarnessConversationPort {
+    subscribe(listener: () => void): () => void;
     readonly kind: string;
     commands?(): Promise<import('./contracts').HarnessSlashCommand[]>;
     command?(name: string, args?: string, selection?: HarnessModelSelection, inputText?: string, submissionId?: string): Promise<HarnessConversationSnapshot>;
@@ -517,7 +519,7 @@ export interface HarnessConversationPort {
     loadEarlier(): Promise<HarnessConversationSnapshot>;
     saveDraft(text: string, attachments?: HarnessAttachment[]): Promise<void>;
     read(): Promise<HarnessConversationSnapshot>;
-    poll(): Promise<HarnessConversationSnapshot>;
+    refresh(): Promise<HarnessConversationSnapshot>;
     models?(): Promise<HarnessModelCatalog>;
     send(text: string, attachments?: HarnessAttachment[], selection?: HarnessModelSelection, submissionId?: string): Promise<HarnessConversationSnapshot>;
     interrupt(): Promise<HarnessConversationSnapshot>;

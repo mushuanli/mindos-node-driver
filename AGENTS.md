@@ -9,7 +9,7 @@
 
 FileStorageBackend 是文件契约；共享文件来源与独立执行会话分别持有生命周期。批量读的取消按订阅者隔离，最后一个订阅者离开才取消共享请求。
 网络错误不能转换成不存在；响应必须验证，所有读取有容量限制。日志不记录 headers、凭据或正文。
-目录监听失败与 profile 会话观察隔离；观察失败保留最近投影并标 stale/refreshError，只有传输失败证据或原生断开事件标 offline。events/list 各阶段使用相同传输证据，协议、权限错误与超时只标 stale。成功轮询即恢复传输状态，不等待新事件；原生断开仍等待原生状态或权威快照恢复。诊断按阶段和安全错误码去重，不记录原始异常正文。
+目录监听失败与 profile 会话观察隔离；观察失败保留最近投影并标 stale/refreshError，只有传输失败证据或原生断开事件标 offline。events/list 各阶段使用相同传输证据，协议、权限错误与超时只标 stale。成功事件帧即恢复传输状态，不等待新事件；原生断开仍等待原生状态或权威快照恢复。诊断按阶段和安全错误码去重，不记录原始异常正文。
 独立仓库不依赖 itookit 的 tsconfig 或私有源码；发布根、harness 与 sync 的 ESM/CJS/类型入口。
 
 原生模型通过 profile.capabilities.models 协商，models 只投影安全目录及按模型区分的推理选项。selection 随 turn 或 prompt command 捕获，按当前目录验证，不映射为本地 Connection 档位；旧节点不发新查询，无效配置不提交提示词。
@@ -22,3 +22,7 @@ HarnessRecovery 持久化最近已接纳的 submittedTurnId，重开后与 pendi
 快照 forkSupport 区分持久能力与 canFork 的暂时可用性；当前原生 fork 协议只支持 latest，明确拒绝的节点声明 none，不按 harness 名推断历史位置支持。
 
 可选 submissionId 将宿主冻结提交关联到 turn/command 的稳定 requestId；HarnessRecovery 保存独立 submission 的 pending/accepted/rejected 回执，准备子操作仍使用独立请求。核对 create/resume 只确认准备，不接纳未发出的 turn；接纳后存储失败保持 unknown，不能把存储冲突当作原生未执行。
+
+0.4 使用按节点/凭据/授权版本共享的 fetch SSE；Harness、项目目录和进程订阅复用连接。eventSnapshot/directorySnapshot 是本地回放，refresh 是显式投影或权威核对；禁止恢复旧轮询 RPC 或按 active 状态增加定时请求。新增/关闭主题重连时带游标，断线不重放修改；单主题授权错误不能使其他主题离线。
+
+SSE 的连接、主题与观察者故障分别处理；单个 next/error 回调抛错不能使其他订阅失效或阻断重连。HarnessEventFeed 与目录通知逐个隔离观察者，诊断只输出安全类别，不记录异常正文。

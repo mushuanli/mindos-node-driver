@@ -63,14 +63,19 @@ it('rejects malformed session, history, and event responses',() => {
     expect(() => validateEvents({epoch: 'e', cursor: 1, gap: false, events: [{seq: 1, timestamp: NaN, message: {method: 'item/started'}}], requests: []})).toThrow();
 });
 
-it('requests compact tool presentation for both history pages and live events', async () => {
-    const call = vi.fn(async (name: string) => name === 'harness_session_read' ? {session, turns: [], nextCursor: null}
-        : {epoch: 'e', cursor: 0, gap: false, events: [], requests: []});
-    const client = new MCPHarnessClient({call, close: vi.fn()});
-    await client.read('codex', 's', {cursor: 'old', toolDetail: 'summary'});
-    await client.events('codex', {after: 7, eventEpoch: 'events'}, {toolDetail: 'summary'});
-    expect(call).toHaveBeenCalledWith('harness_session_read', {profileId: 'codex', sessionId: 's', cursor: 'old', toolDetail: 'summary'}, expect.anything());
-    expect(call).toHaveBeenCalledWith('harness_events', {profileId: 'codex', after: 7, eventEpoch: 'events', toolDetail: 'summary'}, expect.anything());
+it('reads compact histories and receives live events without a polling RPC', async () => {
+    const call = vi.fn(async () => ({session, turns: [], nextCursor: null}));
+    const stop = vi.fn();
+    const subscribe = vi.fn((_plugin, _args, listener) => {
+        queueMicrotask(() => listener.next({epoch:'events',cursor:7,gap:false,events:[],requests:[]})); return stop;
+    });
+    const client = new MCPHarnessClient({call,subscribe,close:vi.fn()});
+    await client.read('codex','s',{cursor:'old',toolDetail:'summary'});
+    expect((await client.eventSnapshot('codex',{after:7,eventEpoch:'events'})).cursor).toBe(7);
+    expect(call).toHaveBeenCalledOnce();
+    expect(call).toHaveBeenCalledWith('harness_session_read',{profileId:'codex',sessionId:'s',cursor:'old',toolDetail:'summary'},expect.anything());
+    expect(subscribe).toHaveBeenCalledWith('harness',{profileId:'codex'},expect.anything());
+    await client.close(); expect(stop).toHaveBeenCalledOnce();
 });
 
 it('uses the MCP v2 SDK and resolves updated credentials for each request',async () => {
@@ -114,28 +119,19 @@ it('rejects a recovery receipt belonging to another request',async () => {
     await expect(client.operation('codex','requested')).rejects.toMatchObject({code:'EIO'});
 });
 
-it('observes project directories only when discovered, validates responses and releases its token', async () => {
-    const token = 'a'.repeat(32), call = vi.fn(async (name: string) => name === 'project_watch' ? {watchId: token, version: token + ':1', gap: false, truncated: false} : {released: true});
-    const close = vi.fn(), metadata = vi.fn(async () => ({'itookit/pi-agent': {fileWatch: true}}));
-    const client = new MCPHarnessClient({call, close, metadata}, {projectId: 'p', revision: 2, readOnly: true});
-    expect(await client.directoryVersion()).toBe(token + ':1');
-    await client.directoryVersion(); expect(call).toHaveBeenLastCalledWith('project_watch', {projectId: 'p', revision: 2, readOnly: true, watchId: token}, undefined);
-    call.mockResolvedValueOnce({watchId: token, version: 'foreign:1', gap: false, truncated: false});
-    await expect(client.directoryVersion()).rejects.toMatchObject({code: 'EIO'});
-    await client.close(); expect(call).toHaveBeenLastCalledWith('project_unwatch', expect.objectContaining({watchId: token}), {timeoutMs: 2000}); expect(close).toHaveBeenCalledOnce();
-    const old = new MCPHarnessClient({call, close}, {projectId: 'p', revision: 2});
-    expect(await old.directoryVersion()).toBeUndefined(); expect(call).toHaveBeenCalledTimes(4);
+it('receives directory invalidations through the shared stream and releases its subscription', async () => {
+    let listener: import('../src/events').RemoteEventListener | undefined;
+    const stop = vi.fn(), close = vi.fn(), call = vi.fn();
+    const subscribe = vi.fn((_plugin,_args,next) => {listener=next;return stop;});
+    const client = new MCPHarnessClient({call,subscribe,close},{projectId:'p',revision:2,readOnly:true});
+    const changed = vi.fn(), release = client.subscribeDirectory(changed);
+    listener!.next({version:'token:1',gap:false,truncated:true});
+    expect(client.directorySnapshot()).toBe('token:1'); expect(changed).toHaveBeenCalledOnce();
+    expect(subscribe).toHaveBeenCalledWith('projects',expect.objectContaining({projectId:'p',revision:2}),expect.anything());
+    expect(call).not.toHaveBeenCalled();
+    expect(() => listener!.next({version:42,gap:false,truncated:false})).toThrow('Invalid directory');
+    release(); expect(stop).toHaveBeenCalledOnce(); await client.close(); expect(close).toHaveBeenCalledOnce();
 });
-it('never manufactures directory versions from elapsed time when watch coverage is partial', async () => {
-    const token = 'b'.repeat(32), now = vi.spyOn(Date, 'now').mockReturnValue(30_000);
-    const call = vi.fn(async () => ({watchId: token, version: token + ':0', gap: false, truncated: true}));
-    const client = new MCPHarnessClient({call, close: vi.fn(), metadata: async () => ({'itookit/pi-agent': {fileWatch: true}})}, {projectId: 'p', revision: 1});
-    try {
-        const first = await client.directoryVersion(); now.mockReturnValue(60_000);
-        expect(await client.directoryVersion()).toBe(first); expect(first).toBe(token + ':0');
-    } finally {now.mockRestore();}
-});
-
 it.each(['missing', 'throws'])('uses the internal mutation ID generator when native UUID %s', async mode => {
     const original = globalThis.crypto;
     vi.stubGlobal('crypto', {getRandomValues: original.getRandomValues.bind(original),

@@ -1,4 +1,4 @@
-import { it, expect } from 'vitest';
+import { it, expect, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, chmod, rm, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ const manifest = resolve(process.env.MINDOS_NODE_MANIFEST ?? '../../tools/mindos
 it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio harness',async () => {
     const root = await mkdtemp(join(tmpdir(),'itookit-harness-'));
     const fixture = join(root,'codex.py'), config = join(root,'config.toml');
-    await writeFile(fixture,await readFile(join(dirname(manifest),'tests/fixtures/codex-app-server.py'))); await chmod(fixture,0o700);
+    await writeFile(fixture,await readFile(join(dirname(manifest),'src/plugin/harness/tests/fixtures/codex-app-server.py'))); await chmod(fixture,0o700);
     await writeFile(config,`listen = "127.0.0.1:0"\nexecution = false\ntoken = "test-harness-token-0123456789"\n[[harnesses]]\nid = "codex"\nkind = "codex"\ncommand = ${JSON.stringify(fixture)}\nhome = ${JSON.stringify(root)}\n[[harnesses.workspaces]]\nid = "project"\npath = ${JSON.stringify(root)}\n`);
     const home=join(root,'home'), exports=join(root,'exports'), catalog=join(root,'catalog');
     await Promise.all([mkdir(home),mkdir(exports)]);
@@ -53,9 +53,12 @@ it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio har
         const readonly=await adapter.open({endpoint,alias:'home',credentialRef:'ref',serverProjectId:project.id,serverProjectRevision:project.revision,access:'ro'});
         try {await expect(readonly.fs.driver.writeContent('/nested/note.txt','forbidden')).rejects.toMatchObject({code:'EROFS'});}finally{await readonly.dispose();}
         const scope=projects.harness(project);
-        const version = await scope.directoryVersion!(); expect(version).toBeTypeOf('string');
+        const stopDirectory = scope.subscribeDirectory!(() => {});
+        await vi.waitFor(() => expect(scope.directorySnapshot!()).toBeTypeOf('string'));
+        const version = scope.directorySnapshot!();
         await writeFile(join(exports, project.path, 'external-native.md'), 'independent CLI write');
-        expect(await scope.directoryVersion!()).not.toBe(version);
+        await vi.waitFor(() => expect(scope.directorySnapshot!()).not.toBe(version));
+        stopDirectory();
         expect((await scope.profiles()).profiles[0].workspaces).toEqual([{id:project.id}]);
         await expect(scope.create('codex',project.id)).rejects.toMatchObject({outcome:'not-committed',code:'ECAPABILITY'});
         await scope.close(); await projects.close();
@@ -72,8 +75,8 @@ it.skipIf(!enabled)('roundtrips MCP SDK v2 → Rust gateway → native stdio har
         expect((await client.read('codex',session.id,{toolDetail:'summary'})).turns).toEqual([]);
         await client.resume('codex',session.id);
         const { turnId } = await client.turn('codex',session.id,'test', {attachments: Array.from({length: 5}, (_, index) => ({kind: 'text' as const, name: `large-${index}.txt`, content: '\n'.repeat(64 * 1024)}))});
-        let page = await client.events('codex',undefined,{toolDetail:'summary'});
-        for (let i=0;i<10 && !page.requests.length;i++) { await new Promise(resolve => setTimeout(resolve,20)); page = await client.events('codex',undefined,{toolDetail:'summary'}); }
+        let page = await client.eventSnapshot('codex',undefined,{toolDetail:'summary'});
+        for (let i=0;i<10 && !page.requests.length;i++) { await new Promise(resolve => setTimeout(resolve,20)); page = await client.eventSnapshot('codex',undefined,{toolDetail:'summary'}); }
         expect(page.events.some(e => e.message.method === 'item/agentMessage/delta')).toBe(true);
         expect(page.events.every(event => Number.isFinite(event.timestamp) && event.timestamp! > 0)).toBe(true);
         await client.respond('codex',page.requests[0].id!,{ decision:'accept' });

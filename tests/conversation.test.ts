@@ -87,7 +87,7 @@ function peer(): HarnessClient {
     return {profiles:vi.fn(async () => ({epoch:'e',profiles:[profile]})), list:vi.fn(), read:vi.fn(async () => ({session:{...session}, turns:[{items:[{id:'a',type:'agentMessage',text:'native history'}]}]})),
         create:vi.fn(async () => ({session:{...session}})), resume:vi.fn(async () => ({session:{...session}})), turn:vi.fn(async () => ({turnId:'t'})),
         interrupt:vi.fn(async () => {}), respond:vi.fn(async () => {}), operation:vi.fn(), close:vi.fn(async () => {}),
-        events:vi.fn(async () => ({epoch:'events',cursor:1,gap:false,events:[],requests:[]}))};
+        eventSnapshot:vi.fn(async () => ({epoch:'events',cursor:1,gap:false,events:[],requests:[]}))};
 }
 it('creates the first prompt command lazily and keeps session actions unavailable in a draft', async () => {
     const client = peer();
@@ -148,20 +148,20 @@ it('keeps newer native input when a normal message is accepted after editing', a
 it('projects native roles, keeps stream items distinct and replaces deltas with finalized content', async () => {
     const client = peer(), view = new HarnessConversation(client, profile, 'p', 's');
     await view.read();
-    vi.mocked(client.events).mockResolvedValue({epoch:'events',cursor:2,gap:false,requests:[],events:[
+    vi.mocked(client.eventSnapshot).mockResolvedValue({epoch:'events',cursor:2,gap:false,requests:[],events:[
         {seq:1,message:{method:'item/agentMessage/delta',params:{threadId:'other',itemId:'a',delta:'wrong'}}},
         {seq:2,message:{method:'item/agentMessage/delta',params:{threadId:'s',itemId:'b',delta:'draft'}}},
         {seq:3,message:{method:'item/completed',params:{threadId:'s',item:{id:'b',type:'agentMessage',text:'final'}}}},
         {seq:4,message:{method:'item/agentMessage/delta',params:{threadId:'s',itemId:'b',delta:'late'}}}
     ]});
-    const state = await view.poll();
+    const state = await view.refresh();
     expect(state.messages.map(m => m.text)).toEqual(['native history','final']);
     await view.close(); expect(client.interrupt).not.toHaveBeenCalled();
 });
 it('repairs an event gap from native history without appending already recorded deltas', async () => {
     const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
-    vi.mocked(client.events).mockResolvedValue({epoch:'events',cursor:2,gap:true,requests:[],events:[{seq:1,message:{method:'item/agentMessage/delta',params:{threadId:'s',itemId:'a',delta:'duplicate'}}}]});
-    const state = await view.poll(); expect(state.gap).toBe(true); expect(state.messages[0].text).toBe('native history');
+    vi.mocked(client.eventSnapshot).mockResolvedValue({epoch:'events',cursor:2,gap:true,requests:[],events:[{seq:1,message:{method:'item/agentMessage/delta',params:{threadId:'s',itemId:'a',delta:'duplicate'}}}]});
+    const state = await view.refresh(); expect(state.gap).toBe(true); expect(state.messages[0].text).toBe('native history');
 });
 it('persists mutation identity before creation and blocks replay after reopening an unknown result', async () => {
     const client = peer(); let record: HarnessRecovery | undefined;
@@ -193,22 +193,22 @@ it('distinguishes projection and inspect failures from network loss and clears r
     const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
     client.inspect = vi.fn().mockRejectedValueOnce(Object.assign(new Error('bad reply'), {code: 'EIO'}))
         .mockResolvedValue({session: {...session}});
-    expect(await view.poll()).toMatchObject({disconnected: false, observation: {stale: true, refreshError: {stage: 'inspect', code: 'EIO'}}});
-    expect((await view.poll()).observation.refreshError).toBeUndefined();
-    vi.mocked(client.events).mockRejectedValueOnce(new TypeError('fetch failed'));
-    expect((await view.poll()).disconnected).toBe(true);
+    expect(await view.refresh()).toMatchObject({disconnected: false, observation: {stale: true, refreshError: {stage: 'inspect', code: 'EIO'}}});
+    expect((await view.refresh()).observation.refreshError).toBeUndefined();
+    vi.mocked(client.eventSnapshot).mockRejectedValueOnce(new TypeError('fetch failed'));
+    expect((await view.refresh()).disconnected).toBe(true);
     expect((await view.read()).disconnected).toBe(false);
-    expect((await view.poll()).observation.refreshError).toBeUndefined();
+    expect((await view.refresh()).observation.refreshError).toBeUndefined();
     await view.close();
 });
 
 it('keeps native process disconnection separate from a healthy empty event response', async () => {
     const client = peer(), view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
-    vi.mocked(client.events).mockResolvedValueOnce({epoch:'e',cursor:1,gap:false,requests:[],events:[
+    vi.mocked(client.eventSnapshot).mockResolvedValueOnce({epoch:'e',cursor:1,gap:false,requests:[],events:[
         {seq:1,message:{method:'harness/disconnected',params:{threadId:'s'}}}]} );
-    expect((await view.poll()).disconnected).toBe(true);
-    vi.mocked(client.events).mockResolvedValue({epoch:'e',cursor:1,gap:false,requests:[],events:[]});
-    expect((await view.poll()).disconnected).toBe(true);
+    expect((await view.refresh()).disconnected).toBe(true);
+    vi.mocked(client.eventSnapshot).mockResolvedValue({epoch:'e',cursor:1,gap:false,requests:[],events:[]});
+    expect((await view.refresh()).disconnected).toBe(true);
     expect((await view.read()).disconnected).toBe(false);
     await view.close();
 });
@@ -218,9 +218,9 @@ it('disables native controls after a process disconnect even while its last acti
     vi.mocked(client.read).mockResolvedValue({session: {...session, status: 'active', activeTurnId: 't'}, turns: []});
     const view = new HarnessConversation(client, profile, 'p', 's'); await view.read();
     expect(view.snapshot().canInterrupt).toBe(true);
-    vi.mocked(client.events).mockResolvedValue({epoch: 'e', cursor: 1, gap: false, requests: [], events: [
+    vi.mocked(client.eventSnapshot).mockResolvedValue({epoch: 'e', cursor: 1, gap: false, requests: [], events: [
         {seq: 1, message: {method: 'harness/disconnected', params: {threadId: 's'}}}]});
-    expect(await view.poll()).toMatchObject({disconnected: true, canInterrupt: false, canRespond: false, canSend: false, canRename: false});
+    expect(await view.refresh()).toMatchObject({disconnected: true, canInterrupt: false, canRespond: false, canSend: false, canRename: false});
     await view.close();
 });
 it('denies sending, interruption and approvals for an attenuated read-only project', async () => {
@@ -288,14 +288,14 @@ it('retains native turn identities and compact tool targets while ignoring tool 
     expect(initial.messages[1]).toMatchObject({role: 'system', text: 'Check the references'});
     expect(initial.messages[2]).toMatchObject({name: 'commandExecution', paths: ['.'], operation: 'search'});
     expect(initial.messages[2]).not.toHaveProperty('input'); expect(initial.messages[2].text).not.toContain('file.ts');
-    vi.mocked(client.events).mockResolvedValueOnce({epoch: 'events', cursor: 2, gap: false, requests: [], events: [
+    vi.mocked(client.eventSnapshot).mockResolvedValueOnce({epoch: 'events', cursor: 2, gap: false, requests: [], events: [
         {seq: 1, message: {method: 'item/started', params: {threadId: 's', turnId: 'next-turn', item: {id: 'live-tool', type: 'commandExecution', command: 'pwd', aggregatedOutput: 'starting', status: 'inProgress'}}}},
         {seq: 2, message: {method: 'item/commandExecution/outputDelta', params: {threadId: 's', turnId: 'next-turn', itemId: 'live-tool', delta: '\n/project'}}},
     ]});
-    const current = await view.poll();
+    const current = await view.refresh();
     expect(current.messages.find(message => message.id === 'live-tool')).toMatchObject({turnId: 'next-turn', text: 'commandExecution', operation: 'execute'});
     expect(client.read).toHaveBeenCalledWith('codex', 's', expect.objectContaining({toolDetail: 'summary'}));
-    expect(client.events).toHaveBeenCalledWith('codex', undefined, expect.objectContaining({toolDetail: 'summary'}));
+    expect(client.eventSnapshot).toHaveBeenCalledWith('codex', undefined, expect.objectContaining({toolDetail: 'summary'}));
     await view.close();
 });
 

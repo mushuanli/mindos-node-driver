@@ -23,7 +23,7 @@ it('queries the read-only usage capability with the authorized project scope', a
 });
 it('uses piggybacked session usage without adding a poll or accumulating snapshots', async () => {
     const profile = {id: 'codex', kind: 'codex', workspaces: [], capabilities: {history: true, create: true, resume: true, interrupt: true, interactions: true}};
-    const client = {read: async () => ({session, turns: []}), close: async () => {}};
+    const client = {eventSnapshot: async () => ({epoch:'e',cursor:0,gap:false,events:[],requests:[]}),read: async () => ({session, turns: []}), close: async () => {}};
     const c = new HarnessConversation(client as never, profile, 'w', 's');
     expect((await c.read()).usage?.totals.inputTokens).toBe(60);
     expect((await c.read()).usage?.totals.inputTokens).toBe(60);

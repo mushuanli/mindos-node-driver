@@ -5,8 +5,9 @@ import { ObservationErrors, connectionLost } from './observation-errors';
 
 export interface HarnessStatusRow { profileId: string; sessionId: string; observation: HarnessObservation; title?: string; archived?: boolean; fileVersion?: string; truncated?: boolean }
 export interface HarnessStatusPort {
+    subscribe(listener: () => void): () => void;
     fileVersion?(): string | undefined;
-    poll(options?: import('@itookit/vfs-core').OperationOptions): Promise<HarnessStatusRow[]>;
+    refresh(options?: import('@itookit/vfs-core').OperationOptions): Promise<HarnessStatusRow[]>;
     close(): Promise<void>;
 }
 interface ProfileState {
@@ -19,10 +20,39 @@ interface ProfileState {
     nativeDisconnected: Set<string>;
     errors: ObservationErrors;
     truncated?: boolean;
+    notificationCursor?: {after: number; eventEpoch: string};
+    requestSignature?: string;
 }
 
 /** One bounded metadata/event stream per project, never reads histories or adopts threads. */
 export class HarnessStatusObserver implements HarnessStatusPort {
+    private readonly listeners = new Set<() => void>();
+    private readonly stops = new Map<string, () => void>();
+    private notify = () => { for (const listener of this.listeners) listener(); };
+    subscribe(listener: () => void): () => void {
+        this.listeners.add(listener);
+        if (this.watchFiles && !this.stops.has('directory')) this.stops.set('directory',this.client.subscribeDirectory?.(this.notify) ?? (() => {}));
+        for (const state of this.profiles.values()) this.observe(state.profile.id);
+        return () => { this.listeners.delete(listener); if (!this.listeners.size) { for (const stop of this.stops.values()) stop(); this.stops.clear(); } };
+    }
+    private observe(id: string): void {
+        if (this.listeners.size && !this.stops.has(id)) {
+            const state = this.profiles.get(id)!;
+            state.notificationCursor = state.cursor;
+            this.stops.set(id,this.client.subscribe(id,() => { void this.changed(state); }));
+        }
+    }
+    private async changed(state: ProfileState): Promise<void> {
+        try {
+            const page = await this.client.eventSnapshot(state.profile.id,state.notificationCursor);
+            state.notificationCursor = {after:page.cursor,eventEpoch:page.epoch};
+            const requests = JSON.stringify(page.requests);
+            const changedRequests = requests !== (state.requestSignature ?? '[]'); state.requestSignature = requests;
+            const relevant = page.events.some(({message}) => /^(thread\/|turn\/|harness\/|serverRequest\/)/.test(message.method)
+                || message.method === 'item/completed' && (message.params?.item as {type?: string})?.type === 'fileChange');
+            if (page.gap || changedRequests || relevant) this.notify();
+        } catch { this.notify(); }
+    }
     private readonly profiles = new Map<string, ProfileState>();
     private directoryVersion?: string;
     private readonly errors = new ObservationErrors();
@@ -30,7 +60,7 @@ export class HarnessStatusObserver implements HarnessStatusPort {
     private pending?: Promise<HarnessStatusRow[]>;
     constructor(private readonly client: HarnessClient, private readonly now = Date.now, private readonly writable = true,
         private readonly watchFiles = true) {}
-    poll(options?: import('@itookit/vfs-core').OperationOptions): Promise<HarnessStatusRow[]> {
+    refresh(options?: import('@itookit/vfs-core').OperationOptions): Promise<HarnessStatusRow[]> {
         if (this.pending) return this.pending;
         const work = this.update(options).finally(() => { this.pending = undefined; });
         this.pending = work; return work;
@@ -49,13 +79,14 @@ export class HarnessStatusObserver implements HarnessStatusPort {
             this.errors.record('profiles', error);
         }
         for (const state of this.profiles.values()) await this.updateProfile(state, options);
+        for (const state of this.profiles.values()) this.observe(state.profile.id);
         return [...this.profiles.values()].flatMap(state => [...state.observations].map(([sessionId, observation]) =>
             ({profileId: state.profile.id, sessionId, observation, title: state.sessions.get(sessionId)?.title, archived: state.sessions.get(sessionId)?.archived, fileVersion: state.fileVersion,
                 ...(state.truncated ? {truncated: true} : {})})));
     }
     private async watchDirectory(options?: import('@itookit/vfs-core').OperationOptions): Promise<void> {
         try {
-            this.directoryVersion = await this.client.directoryVersion?.(options);
+            this.directoryVersion = await this.client.directorySnapshot?.();
             this.errors.clear('directory');
         } catch (error) {
             if (options?.signal?.aborted) throw error;
@@ -65,7 +96,7 @@ export class HarnessStatusObserver implements HarnessStatusPort {
     private async updateProfile(state: ProfileState, options?: import('@itookit/vfs-core').OperationOptions): Promise<void> {
         let stage = 'events';
         try {
-            const page = await this.client.events(state.profile.id, state.cursor, {...options, toolDetail: 'summary'});
+            const page = await this.client.eventSnapshot(state.profile.id, state.cursor, {...options, toolDetail: 'summary'});
             state.errors.clear(stage);
             const repair = page.gap || !!state.cursor && state.cursor.eventEpoch !== page.epoch;
             const refresh = repair || this.now() - state.listedAt >= 15_000 || !state.listedAt;
@@ -151,5 +182,5 @@ export class HarnessStatusObserver implements HarnessStatusPort {
             state.observations.set(id, observation);
         }
     }
-    close() { return this.client.close(); }
+    close() { for (const stop of this.stops.values()) stop(); this.stops.clear(); this.listeners.clear(); return this.client.close(); }
 }

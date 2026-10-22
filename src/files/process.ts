@@ -1,6 +1,5 @@
 import { FSError, checkOperation, operationScope, pathUtils, type OperationOptions } from '@itookit/vfs-core';
 import type { HttpTransport } from './transport';
-import { pause } from './transport/cancellation';
 import { ProcessClient } from './process/client';
 import { requestId } from './request-id';
 import type { RemoteProcessSpec, ProcessStatus, ExecOptions } from './process/contracts';
@@ -53,14 +52,21 @@ export class HttpProcessSession {
     }
 
     private async wait(id: string, initial: ProcessStatus, options: OperationOptions): Promise<ProcessStatus> {
-        let status = initial;
-        while (status.state === 'running') {
-            checkOperation(options);
-            if (this.closed) throw new FSError('ECANCELLED', 'Remote process context is closing');
-            await pause(100, options);
-            status = await this.client.status(id, options);
-        }
-        return status;
+        if (initial.state !== 'running') return initial;
+        checkOperation(options);
+        return new Promise((resolve,reject) => {
+            let stop = () => {};
+            const cleanup = () => { stop(); options.signal?.removeEventListener('abort',abort); };
+            const abort = () => { cleanup(); reject(new FSError('ECANCELLED','Remote process observation cancelled')); };
+            stop = this.client.subscribe(id, status => {
+                if (status.state !== 'running') { cleanup(); resolve(status); }
+            }, error => {
+                const status = (error as {status?: number})?.status;
+                if (status && status >= 400 && status < 500) { cleanup(); reject(error); }
+            });
+            options.signal?.addEventListener('abort',abort,{once:true});
+            if (options.signal?.aborted) abort();
+        });
     }
 
     private async failed(id: string, error: unknown, options: OperationOptions, registered: boolean): Promise<never> {
@@ -89,10 +95,7 @@ export class HttpProcessSession {
         const scope = operationScope({ timeoutMs: 10_000 });
         try {
             let status = await this.client.cancel(id);
-            while (status.state === 'running') {
-                await pause(100, scope.options);
-                status = await this.client.status(id, scope.options);
-            }
+            status = await this.wait(id,status,scope.options);
             if (!isTerminal(status)) throw new FSError('EBUSY', 'Remote process cleanup is not confirmed');
             this.outstanding.delete(id);
         } finally { scope.dispose(); }

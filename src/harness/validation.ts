@@ -72,6 +72,7 @@ export function validateEvents(value: unknown): HarnessEvents {
     const v = record(value);
     if (typeof v.epoch !== 'string' || !v.epoch || !Number.isSafeInteger(v.cursor) || (v.cursor as number) < 0 || typeof v.gap !== 'boolean'
         || !Array.isArray(v.events) || !Array.isArray(v.requests)) throw invalid();
+    if (v.after !== undefined && (!Number.isSafeInteger(v.after) || (v.after as number) < 0 || (v.after as number) > (v.cursor as number))) throw invalid();
     let previous = 0;
     for (const event of v.events) {
         const e = record(event);

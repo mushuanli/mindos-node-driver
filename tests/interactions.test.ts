@@ -8,7 +8,7 @@ const request = {id: 'q', method: 'item/tool/requestUserInput', params: {threadI
 ]}};
 function fixture() {
     const client = {profiles: async () => ({epoch: 'e', profiles: [profile]}), read: async () => ({session: {id: 's', title: 'S', cwd: '/p', status: 'idle', owned: true, resumable: true}, turns: []}),
-        events: vi.fn(async () => ({epoch: 'events', cursor: 1, gap: false, events: [], requests: [request]})),
+        eventSnapshot: vi.fn(async () => ({epoch: 'events', cursor: 1, gap: false, events: [], requests: [request]})),
         operation: vi.fn(async () => ({outcome: 'unknown', requestId: 'reply'})), respond: vi.fn(async () => {}), close: vi.fn(async () => {})};
     return client;
 }
@@ -34,6 +34,6 @@ it('persists unknown response receipts independently and never persists secret a
     await expect(reopened.respond('q', {answers: {}})).rejects.toMatchObject({code: 'EACCES'});
     expect(client.respond).toHaveBeenCalledOnce();
     client.operation.mockResolvedValue({outcome: 'committed', requestId: record!.responses![0].requestId} as never);
-    client.events.mockResolvedValue({epoch: 'events', cursor: 2, gap: false, events: [], requests: []});
+    client.eventSnapshot.mockResolvedValue({epoch: 'events', cursor: 2, gap: false, events: [], requests: []});
     expect((await reopened.reconcile()).requests).toEqual([]); expect(record!.responses).toEqual([]); await reopened.close();
 });
